@@ -1,6 +1,6 @@
 # WangPanBot
 
-一个基于 `aiogram + sqlite` 的 Telegram 文件收录与搜索机器人。
+一个基于 `aiogram` 的 Telegram 文件收录与搜索机器人，支持多数据库后端。
 
 ## 功能
 
@@ -9,6 +9,7 @@
 - 文件类型筛选（支持常用文档/视频/音频/图片/压缩包）
 - 点击按钮回传文件
 - 管理员删除文件（按钮删除或 `/delete 文件ID`）
+- 数据库后端支持：`sqlite / supabase / mongodb / turso / neon`（部署时单选其一）
 - 支持 `polling` 和 `webhook` 两种运行方式
 
 ## 环境要求
@@ -23,13 +24,39 @@ pip install -r requirements.txt
 
 ## 配置
 
-参考 `.env.example` 设置环境变量：
+先复制 `.env.example`，按需填写变量。
 
-- `BOT_TOKEN` 必填
-- `ADMIN_ID` 可选，设置后仅允许该用户在私聊上传
-- `DB_PATH` 可选，默认 `data.db`
-- `SEARCH_LIMIT` 可选，默认 `5`
-- `WEBHOOK_*` 仅 webhook 模式需要（在 Render 上可不填，自动使用 `RENDER_EXTERNAL_URL`）
+通用变量：
+
+- `BOT_TOKEN` 必填，Telegram Bot Token
+- `ADMIN_ID` 可选，设置后仅管理员可在私聊上传/删除
+- `SEARCH_LIMIT` 可选，单页搜索条数，默认 `5`
+- `SEARCH_SESSION_TTL_SECONDS` 可选，分页会话过期时间（秒），默认 `1800`
+- `DB_PROVIDER` 必填，数据库类型：`sqlite | supabase | mongodb | turso | neon`
+
+数据库变量（只需要填你选择的那一组）：
+
+- `sqlite`
+: `DB_PATH`（默认 `data.db`）
+- `supabase`
+: `SUPABASE_DATABASE_URL`（推荐）或 `SUPABASE_DB_URL`，也可用 `DATABASE_URL` 兜底
+- `neon`
+: `NEON_DATABASE_URL`，也可用 `DATABASE_URL` 兜底
+- `mongodb`
+: `MONGODB_URI`（必填），可选 `MONGODB_DB_NAME`、`MONGODB_COLLECTION_NAME`
+- `turso`
+: `TURSO_DATABASE_URL`（必填），`TURSO_AUTH_TOKEN`（云库通常必填），可选 `TURSO_LOCAL_PATH`（embedded replica 本地文件）
+
+Postgres 连接池（`supabase`/`neon`）：
+
+- `POSTGRES_POOL_SIZE` 可选，默认 `5`
+
+Webhook 变量（仅 `app.py` 模式）：
+
+- `WEBHOOK_PATH` 默认 `/webhook`
+- `WEBHOOK_URL` 完整地址，优先级最高
+- 或 `WEBHOOK_BASE_URL` + `WEBHOOK_PATH`
+- Render 可不填域名，自动使用 `RENDER_EXTERNAL_URL`
 
 ## 本地运行（Polling）
 
@@ -70,7 +97,7 @@ GET /healthz
 注意：
 
 - Render 免费 Web Service 会在 15 分钟无流量后休眠
-- 免费实例文件系统是临时的，`data.db`（SQLite）在重启/重新部署后会丢失
+- 如果 `DB_PROVIDER=sqlite`，免费实例文件系统是临时的，`data.db` 在重启/重新部署后会丢失
 - 生产场景建议改用 Postgres 持久化数据
 
 ## Kubernetes 部署

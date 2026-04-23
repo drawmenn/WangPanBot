@@ -1,8 +1,11 @@
+import asyncio
 import logging
 import os
+import re
 import secrets
 import time
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Optional, Protocol
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, types
@@ -39,9 +42,11 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is required. Please set it in environment variables.")
 
+DB_PROVIDER = os.getenv("DB_PROVIDER", "sqlite").strip().lower() or "sqlite"
 DB_PATH = os.getenv("DB_PATH", "data.db").strip() or "data.db"
 SEARCH_LIMIT = max(1, min(20, _parse_int("SEARCH_LIMIT", 5)))
 SEARCH_SESSION_TTL_SECONDS = max(300, _parse_int("SEARCH_SESSION_TTL_SECONDS", 1800))
+POSTGRES_POOL_SIZE = max(1, min(20, _parse_int("POSTGRES_POOL_SIZE", 5)))
 ADMIN_ID = _parse_optional_int("ADMIN_ID")
 
 bot = Bot(token=BOT_TOKEN)
@@ -77,11 +82,18 @@ FILTER_LABELS: dict[str, str] = {
     "epub": "EPUB",
     "mobi": "MOBI",
 }
-
 FILTERS_PER_ROW = 4
 
 # token -> (keyword, last_access_unix_time)
 _search_sessions: dict[str, tuple[str, float]] = {}
+
+
+def _extract_extension(name: str) -> Optional[str]:
+    cleaned = name.strip().lower()
+    if "." not in cleaned:
+        return None
+    ext = cleaned.rsplit(".", maxsplit=1)[1]
+    return ext or None
 
 
 def _is_admin_user(user: Optional[types.User]) -> bool:
@@ -138,44 +150,601 @@ def _short_button_text(text: str, limit: int = 42) -> str:
     return f"{text[:limit - 3]}..."
 
 
-async def init_db() -> None:
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                file_id TEXT NOT NULL UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+class FileStore(Protocol):
+    async def init(self) -> None:
+        ...
+
+    async def close(self) -> None:
+        ...
+
+    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+        ...
+
+    async def search_file(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        ...
+
+    async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        ...
+
+    async def delete_file_record(self, record_id: int) -> bool:
+        ...
+
+
+class SQLiteStore:
+    def __init__(self, db_path: str) -> None:
+        self._db_path = db_path
+
+    async def init(self) -> None:
+        async with aiosqlite.connect(self._db_path) as db:
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    file_id TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
             )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+            await db.commit()
+
+    async def close(self) -> None:
+        return None
+
+    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT 1 FROM files WHERE file_id = ?", (file_id,))
+            exists = await cursor.fetchone() is not None
+
+            await db.execute(
+                """
+                INSERT INTO files (name, file_id)
+                VALUES (?, ?)
+                ON CONFLICT(file_id) DO UPDATE SET
+                    name = excluded.name
+                """,
+                (name, file_id),
+            )
+            await db.commit()
+            return not exists
+
+    async def search_file(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        async with aiosqlite.connect(self._db_path) as db:
+            query = """
+                SELECT id, name
+                FROM files
+                WHERE LOWER(name) LIKE LOWER(?)
             """
+            params: list[object] = [f"%{keyword}%"]
+
+            if extension is not None:
+                query += " AND LOWER(name) LIKE ?"
+                params.append(f"%.{extension.lower()}")
+
+            query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit + 1, max(0, offset)])
+
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+
+        has_next = len(rows) > limit
+        visible_rows = rows[:limit]
+        return [(int(row[0]), str(row[1])) for row in visible_rows], has_next
+
+    async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT file_id, name FROM files WHERE id = ?",
+                (record_id,),
+            )
+            row = await cursor.fetchone()
+
+        if row is None:
+            return None
+        return str(row[0]), str(row[1])
+
+    async def delete_file_record(self, record_id: int) -> bool:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute("SELECT 1 FROM files WHERE id = ?", (record_id,))
+            exists = await cursor.fetchone() is not None
+            if not exists:
+                return False
+
+            await db.execute("DELETE FROM files WHERE id = ?", (record_id,))
+            await db.commit()
+            return True
+
+
+class PostgresStore:
+    def __init__(self, dsn: str, pool_size: int) -> None:
+        self._dsn = dsn
+        self._pool_size = pool_size
+        self._pool: Optional["asyncpg.Pool"] = None
+
+    async def _get_pool(self):
+        if self._pool is not None:
+            return self._pool
+
+        import asyncpg
+
+        self._pool = await asyncpg.create_pool(
+            dsn=self._dsn,
+            min_size=1,
+            max_size=self._pool_size,
+            statement_cache_size=0,
         )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)"
+        return self._pool
+
+    async def init(self) -> None:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS files (
+                    id BIGSERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    file_id TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                )
+                """
+            )
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+
+    async def close(self) -> None:
+        if self._pool is None:
+            return
+        await self._pool.close()
+        self._pool = None
+
+    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            exists = await conn.fetchval("SELECT 1 FROM files WHERE file_id = $1", file_id)
+            await conn.execute(
+                """
+                INSERT INTO files (name, file_id)
+                VALUES ($1, $2)
+                ON CONFLICT(file_id) DO UPDATE SET
+                    name = EXCLUDED.name
+                """,
+                name,
+                file_id,
+            )
+            return not bool(exists)
+
+    async def search_file(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            if extension is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, name
+                    FROM files
+                    WHERE name ILIKE $1
+                    ORDER BY id DESC
+                    LIMIT $2 OFFSET $3
+                    """,
+                    f"%{keyword}%",
+                    limit + 1,
+                    max(0, offset),
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, name
+                    FROM files
+                    WHERE name ILIKE $1
+                      AND LOWER(name) LIKE $2
+                    ORDER BY id DESC
+                    LIMIT $3 OFFSET $4
+                    """,
+                    f"%{keyword}%",
+                    f"%.{extension.lower()}",
+                    limit + 1,
+                    max(0, offset),
+                )
+
+        has_next = len(rows) > limit
+        visible_rows = rows[:limit]
+        return [(int(row["id"]), str(row["name"])) for row in visible_rows], has_next
+
+    async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT file_id, name FROM files WHERE id = $1",
+                record_id,
+            )
+
+        if row is None:
+            return None
+        return str(row["file_id"]), str(row["name"])
+
+    async def delete_file_record(self, record_id: int) -> bool:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "DELETE FROM files WHERE id = $1 RETURNING 1",
+                record_id,
+            )
+            return row is not None
+
+
+class TursoStore:
+    def __init__(self, database_url: str, auth_token: str, local_path: str) -> None:
+        self._database_url = database_url
+        self._auth_token = auth_token
+        self._local_path = local_path
+
+    def _connect(self):
+        import libsql
+
+        if self._local_path:
+            return libsql.connect(
+                self._local_path,
+                sync_url=self._database_url,
+                auth_token=self._auth_token or None,
+            )
+
+        if self._auth_token:
+            return libsql.connect(self._database_url, auth_token=self._auth_token)
+
+        return libsql.connect(self._database_url)
+
+    @staticmethod
+    def _safe_close(conn) -> None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    def _init_sync(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    file_id TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+            conn.commit()
+        finally:
+            self._safe_close(conn)
+
+    async def init(self) -> None:
+        await asyncio.to_thread(self._init_sync)
+
+    async def close(self) -> None:
+        return None
+
+    def _add_or_update_sync(self, name: str, file_id: str) -> bool:
+        conn = self._connect()
+        try:
+            exists_cursor = conn.execute("SELECT 1 FROM files WHERE file_id = ?", (file_id,))
+            exists = exists_cursor.fetchone() is not None
+
+            conn.execute(
+                """
+                INSERT INTO files (name, file_id)
+                VALUES (?, ?)
+                ON CONFLICT(file_id) DO UPDATE SET
+                    name = excluded.name
+                """,
+                (name, file_id),
+            )
+            conn.commit()
+            return not exists
+        finally:
+            self._safe_close(conn)
+
+    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+        return await asyncio.to_thread(self._add_or_update_sync, name, file_id)
+
+    def _search_sync(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        conn = self._connect()
+        try:
+            query = """
+                SELECT id, name
+                FROM files
+                WHERE LOWER(name) LIKE LOWER(?)
+            """
+            params: list[object] = [f"%{keyword}%"]
+
+            if extension is not None:
+                query += " AND LOWER(name) LIKE ?"
+                params.append(f"%.{extension.lower()}")
+
+            query += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([limit + 1, max(0, offset)])
+
+            rows = conn.execute(query, tuple(params)).fetchall()
+        finally:
+            self._safe_close(conn)
+
+        has_next = len(rows) > limit
+        visible_rows = rows[:limit]
+        return [(int(row[0]), str(row[1])) for row in visible_rows], has_next
+
+    async def search_file(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        return await asyncio.to_thread(self._search_sync, keyword, extension, offset, limit)
+
+    def _get_file_sync(self, record_id: int) -> Optional[tuple[str, str]]:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT file_id, name FROM files WHERE id = ?",
+                (record_id,),
+            ).fetchone()
+        finally:
+            self._safe_close(conn)
+
+        if row is None:
+            return None
+        return str(row[0]), str(row[1])
+
+    async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        return await asyncio.to_thread(self._get_file_sync, record_id)
+
+    def _delete_sync(self, record_id: int) -> bool:
+        conn = self._connect()
+        try:
+            exists = conn.execute("SELECT 1 FROM files WHERE id = ?", (record_id,)).fetchone()
+            if exists is None:
+                return False
+
+            conn.execute("DELETE FROM files WHERE id = ?", (record_id,))
+            conn.commit()
+            return True
+        finally:
+            self._safe_close(conn)
+
+    async def delete_file_record(self, record_id: int) -> bool:
+        return await asyncio.to_thread(self._delete_sync, record_id)
+
+
+class MongoStore:
+    def __init__(self, uri: str, db_name: str, collection_name: str) -> None:
+        self._uri = uri
+        self._db_name = db_name
+        self._collection_name = collection_name
+
+        self._client = None
+        self._db = None
+        self._files = None
+        self._counters = None
+
+        from motor.motor_asyncio import AsyncIOMotorClient
+        from pymongo import ASCENDING, DESCENDING, ReturnDocument
+        from pymongo.errors import ConfigurationError, DuplicateKeyError
+
+        self._AsyncIOMotorClient = AsyncIOMotorClient
+        self._ASCENDING = ASCENDING
+        self._DESCENDING = DESCENDING
+        self._ReturnDocument = ReturnDocument
+        self._ConfigurationError = ConfigurationError
+        self._DuplicateKeyError = DuplicateKeyError
+
+    async def init(self) -> None:
+        self._client = self._AsyncIOMotorClient(self._uri)
+
+        if self._db_name:
+            self._db = self._client[self._db_name]
+        else:
+            try:
+                default_db = self._client.get_default_database()
+            except self._ConfigurationError:
+                default_db = None
+            self._db = default_db if default_db is not None else self._client["wangpanbot"]
+
+        self._files = self._db[self._collection_name]
+        self._counters = self._db["counters"]
+
+        await self._files.create_index([("file_id", self._ASCENDING)], unique=True)
+        await self._files.create_index([("record_id", self._ASCENDING)], unique=True)
+        await self._files.create_index([("name", self._ASCENDING)])
+        await self._files.create_index([("ext", self._ASCENDING)])
+
+    async def close(self) -> None:
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    async def _next_record_id(self) -> int:
+        doc = await self._counters.find_one_and_update(
+            {"_id": "files"},
+            {"$inc": {"seq": 1}},
+            upsert=True,
+            return_document=self._ReturnDocument.AFTER,
         )
-        await db.commit()
+        return int(doc["seq"])
+
+    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+        extension = _extract_extension(name)
+        existing = await self._files.find_one({"file_id": file_id}, {"_id": 0, "record_id": 1})
+
+        if existing is not None:
+            await self._files.update_one(
+                {"file_id": file_id},
+                {"$set": {"name": name, "ext": extension}},
+            )
+            return False
+
+        record_id = await self._next_record_id()
+        try:
+            await self._files.insert_one(
+                {
+                    "record_id": record_id,
+                    "name": name,
+                    "file_id": file_id,
+                    "ext": extension,
+                    "created_at": datetime.now(timezone.utc),
+                }
+            )
+            return True
+        except self._DuplicateKeyError:
+            await self._files.update_one(
+                {"file_id": file_id},
+                {"$set": {"name": name, "ext": extension}},
+            )
+            return False
+
+    async def search_file(
+        self,
+        keyword: str,
+        extension: Optional[str],
+        offset: int,
+        limit: int,
+    ) -> tuple[list[tuple[int, str]], bool]:
+        query: dict[str, object] = {
+            "name": {"$regex": re.escape(keyword), "$options": "i"}
+        }
+        if extension is not None:
+            query["ext"] = extension.lower()
+
+        cursor = (
+            self._files.find(query, {"_id": 0, "record_id": 1, "name": 1})
+            .sort("record_id", self._DESCENDING)
+            .skip(max(0, offset))
+            .limit(limit + 1)
+        )
+        rows = await cursor.to_list(length=limit + 1)
+
+        has_next = len(rows) > limit
+        visible_rows = rows[:limit]
+        return [
+            (int(row["record_id"]), str(row["name"]))
+            for row in visible_rows
+            if "record_id" in row and "name" in row
+        ], has_next
+
+    async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        row = await self._files.find_one(
+            {"record_id": record_id},
+            {"_id": 0, "file_id": 1, "name": 1},
+        )
+        if row is None:
+            return None
+        return str(row["file_id"]), str(row["name"])
+
+    async def delete_file_record(self, record_id: int) -> bool:
+        result = await self._files.delete_one({"record_id": record_id})
+        return result.deleted_count > 0
+
+
+def _resolve_postgres_dsn(provider: str) -> str:
+    if provider == "supabase":
+        dsn = (
+            os.getenv("SUPABASE_DATABASE_URL", "").strip()
+            or os.getenv("SUPABASE_DB_URL", "").strip()
+            or os.getenv("DATABASE_URL", "").strip()
+        )
+        if not dsn:
+            raise RuntimeError(
+                "For DB_PROVIDER=supabase, set SUPABASE_DATABASE_URL "
+                "(or SUPABASE_DB_URL / DATABASE_URL)."
+            )
+        return dsn
+
+    if provider == "neon":
+        dsn = (
+            os.getenv("NEON_DATABASE_URL", "").strip()
+            or os.getenv("DATABASE_URL", "").strip()
+        )
+        if not dsn:
+            raise RuntimeError(
+                "For DB_PROVIDER=neon, set NEON_DATABASE_URL (or DATABASE_URL)."
+            )
+        return dsn
+
+    raise RuntimeError(f"Unsupported postgres provider: {provider}")
+
+
+def _build_file_store() -> FileStore:
+    if DB_PROVIDER == "sqlite":
+        return SQLiteStore(DB_PATH)
+
+    if DB_PROVIDER in {"supabase", "neon"}:
+        return PostgresStore(_resolve_postgres_dsn(DB_PROVIDER), POSTGRES_POOL_SIZE)
+
+    if DB_PROVIDER == "mongodb":
+        mongo_uri = os.getenv("MONGODB_URI", "").strip()
+        if not mongo_uri:
+            raise RuntimeError("For DB_PROVIDER=mongodb, set MONGODB_URI.")
+        mongo_db_name = os.getenv("MONGODB_DB_NAME", "").strip()
+        mongo_collection_name = os.getenv("MONGODB_COLLECTION_NAME", "files").strip() or "files"
+        return MongoStore(
+            uri=mongo_uri,
+            db_name=mongo_db_name,
+            collection_name=mongo_collection_name,
+        )
+
+    if DB_PROVIDER == "turso":
+        turso_database_url = os.getenv("TURSO_DATABASE_URL", "").strip()
+        if not turso_database_url:
+            raise RuntimeError("For DB_PROVIDER=turso, set TURSO_DATABASE_URL.")
+        turso_auth_token = os.getenv("TURSO_AUTH_TOKEN", "").strip()
+        turso_local_path = os.getenv("TURSO_LOCAL_PATH", "").strip()
+        return TursoStore(
+            database_url=turso_database_url,
+            auth_token=turso_auth_token,
+            local_path=turso_local_path,
+        )
+
+    raise RuntimeError(
+        "Unsupported DB_PROVIDER. Use one of: sqlite, supabase, mongodb, turso, neon."
+    )
+
+
+file_store = _build_file_store()
+
+
+async def init_db() -> None:
+    await file_store.init()
+    logger.info("Database initialized with provider: %s", DB_PROVIDER)
+
+
+async def close_db() -> None:
+    await file_store.close()
 
 
 async def add_or_update_file(name: str, file_id: str) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT 1 FROM files WHERE file_id = ?",
-            (file_id,),
-        )
-        exists = await cursor.fetchone() is not None
-
-        await db.execute(
-            """
-            INSERT INTO files (name, file_id)
-            VALUES (?, ?)
-            ON CONFLICT(file_id) DO UPDATE SET
-                name = excluded.name
-            """,
-            (name, file_id),
-        )
-        await db.commit()
-
-    return not exists
+    return await file_store.add_or_update_file(name=name, file_id=file_id)
 
 
 async def search_file(
@@ -184,56 +753,20 @@ async def search_file(
     offset: int = 0,
     limit: int = SEARCH_LIMIT,
 ) -> tuple[list[tuple[int, str]], bool]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        query = """
-            SELECT id, name
-            FROM files
-            WHERE name LIKE ?
-        """
-        params: list[object] = [f"%{keyword}%"]
-
-        if extension is not None:
-            query += " AND LOWER(name) LIKE ?"
-            params.append(f"%.{extension.lower()}")
-
-        query += """
-            ORDER BY id DESC
-            LIMIT ? OFFSET ?
-        """
-        params.extend([limit + 1, max(0, offset)])
-
-        cursor = await db.execute(
-            query,
-            tuple(params),
-        )
-        rows = await cursor.fetchall()
-        has_next = len(rows) > limit
-        visible_rows = rows[:limit]
-        return [(int(row[0]), str(row[1])) for row in visible_rows], has_next
+    return await file_store.search_file(
+        keyword=keyword,
+        extension=extension,
+        offset=offset,
+        limit=limit,
+    )
 
 
 async def get_file(record_id: int) -> Optional[tuple[str, str]]:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT file_id, name FROM files WHERE id = ?",
-            (record_id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        return str(row[0]), str(row[1])
+    return await file_store.get_file(record_id=record_id)
 
 
 async def delete_file_record(record_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT 1 FROM files WHERE id = ?", (record_id,))
-        exists = await cursor.fetchone() is not None
-        if not exists:
-            return False
-
-        await db.execute("DELETE FROM files WHERE id = ?", (record_id,))
-        await db.commit()
-        return True
+    return await file_store.delete_file_record(record_id=record_id)
 
 
 def _build_search_keyboard(

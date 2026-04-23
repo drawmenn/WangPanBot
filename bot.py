@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from core import bot, dp, init_db
+from core import bot, close_db, dp, init_db
 
 
 logging.basicConfig(
@@ -17,6 +17,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot)
     finally:
+        await close_db()
         await bot.session.close()
 
 

@@ -5,7 +5,7 @@ from aiogram import types
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from core import bot, dp, init_db
+from core import bot, close_db, dp, init_db
 
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook").strip() or "/webhook"
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").strip()
@@ -60,4 +60,5 @@ async def on_startup() -> None:
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await bot.delete_webhook()
+    await close_db()
     await bot.session.close()

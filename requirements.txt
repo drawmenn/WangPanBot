@@ -2,3 +2,6 @@ aiogram>=3.13,<4
 fastapi>=0.115,<1
 uvicorn[standard]>=0.30,<1
 aiosqlite>=0.20,<1
+asyncpg>=0.29,<1
+motor>=3.5,<4
+libsql>=0.1,<1
