@@ -9,6 +9,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py bot.py core.py ./
+COPY web ./web
 
 RUN useradd --create-home --uid 10001 appuser
 USER 10001
