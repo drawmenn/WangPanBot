@@ -318,3 +318,36 @@ MTPROTO_CHUNK_SIZE=1048576
 说明：
 - `API_ID/API_HASH` 在 `https://my.telegram.org` 创建应用后获取
 - 如果没有配置这两个变量，系统会自动使用 Bot API 回退下载逻辑
+
+## 主备分工（同一 BOT_TOKEN，不抢 webhook）
+
+如果你要同时保留 `Kuberns + Render` 两套环境，推荐：
+
+- 主站（Kuberns）：`WEBHOOK_ENABLED=1`
+- 备站（Render）：`WEBHOOK_ENABLED=0`
+
+这样备站仍可部署并访问网页端，但不会在启动时 `setWebhook`，不会抢走主站的 webhook。
+
+### 环境变量示例
+
+主站（Kuberns）：
+```env
+WEBHOOK_ENABLED=1
+WEBHOOK_BASE_URL=https://your-kuberns-domain
+WEBHOOK_PATH=/webhook
+```
+
+备站（Render）：
+```env
+WEBHOOK_ENABLED=0
+# 备站可不配置 WEBHOOK_URL / WEBHOOK_BASE_URL
+# 也不会处理 /webhook 请求（返回 404）
+```
+
+### 切换为备站接管（故障切换）
+
+1. 先把主站停掉（避免双活）
+2. 将备站 `WEBHOOK_ENABLED` 改为 `1`
+3. 给备站配置 `WEBHOOK_BASE_URL` 或 `WEBHOOK_URL`
+4. 重启备站
+5. 用 `getWebhookInfo` 确认 webhook 已指向备站

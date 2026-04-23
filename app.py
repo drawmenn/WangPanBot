@@ -30,6 +30,12 @@ WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook").strip() or "/webhook"
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").strip()
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").strip()
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "").strip()
+WEBHOOK_ENABLED = os.getenv("WEBHOOK_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 WEB_UI_ENABLED = os.getenv("WEB_UI_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
@@ -42,17 +48,19 @@ WEB_UPLOAD_CHAT_ID = os.getenv("WEB_UPLOAD_CHAT_ID", "").strip()
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
 
-if WEBHOOK_URL:
-    webhook_target = WEBHOOK_URL
-elif WEBHOOK_BASE_URL:
-    webhook_target = f"{WEBHOOK_BASE_URL.rstrip('/')}{WEBHOOK_PATH}"
-elif RENDER_EXTERNAL_URL:
-    webhook_target = f"{RENDER_EXTERNAL_URL.rstrip('/')}{WEBHOOK_PATH}"
-else:
-    raise RuntimeError(
-        "Set WEBHOOK_URL (full url), WEBHOOK_BASE_URL (domain only), "
-        "or provide RENDER_EXTERNAL_URL at runtime."
-    )
+webhook_target: str | None = None
+if WEBHOOK_ENABLED:
+    if WEBHOOK_URL:
+        webhook_target = WEBHOOK_URL
+    elif WEBHOOK_BASE_URL:
+        webhook_target = f"{WEBHOOK_BASE_URL.rstrip('/')}{WEBHOOK_PATH}"
+    elif RENDER_EXTERNAL_URL:
+        webhook_target = f"{RENDER_EXTERNAL_URL.rstrip('/')}{WEBHOOK_PATH}"
+    else:
+        raise RuntimeError(
+            "Set WEBHOOK_URL (full url), WEBHOOK_BASE_URL (domain only), "
+            "or provide RENDER_EXTERNAL_URL at runtime."
+        )
 
 logging.basicConfig(
     level=logging.INFO,
@@ -136,6 +144,9 @@ async def healthz() -> dict[str, bool]:
 
 @app.post(WEBHOOK_PATH)
 async def webhook(req: Request):
+    if not WEBHOOK_ENABLED:
+        raise HTTPException(status_code=404, detail="Webhook endpoint disabled on this instance.")
+
     try:
         data = await req.json()
         update = types.Update.model_validate(data, context={"bot": bot})
@@ -394,13 +405,17 @@ async def on_startup() -> None:
     await init_db()
     await register_bot_commands()
     await mtproto_streamer.start()
-    await bot.set_webhook(webhook_target)
-    logger.info("Webhook has been set to %s", webhook_target)
+    if WEBHOOK_ENABLED and webhook_target is not None:
+        await bot.set_webhook(webhook_target)
+        logger.info("Webhook has been set to %s", webhook_target)
+    else:
+        logger.info("WEBHOOK_ENABLED is false; skip set_webhook on this instance.")
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    await bot.delete_webhook()
+    if WEBHOOK_ENABLED:
+        await bot.delete_webhook()
     await mtproto_streamer.stop()
     await close_db()
     await bot.session.close()
