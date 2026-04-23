@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from core import bot, close_db, dp, init_db
+from core import bot, close_db, dp, init_db, register_bot_commands
 
 
 logging.basicConfig(
@@ -12,6 +12,7 @@ logging.basicConfig(
 
 async def main() -> None:
     await init_db()
+    await register_bot_commands()
     logging.info("Bot is starting in polling mode")
 
     try:

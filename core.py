@@ -11,7 +11,7 @@ import aiosqlite
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandObject
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,37 @@ FILTERS_PER_ROW = 4
 
 # token -> (keyword, last_access_unix_time)
 _search_sessions: dict[str, tuple[str, float]] = {}
+TEXT_COMMAND_ALIASES: dict[str, str] = {
+    "开始": "start",
+    "帮助": "help",
+    "我的文件": "myfiles",
+}
+
+
+def _build_bot_commands() -> list[BotCommand]:
+    commands = [
+        BotCommand(command="start", description="启动与欢迎"),
+        BotCommand(command="help", description="查看使用说明"),
+        BotCommand(command="search", description="按关键词搜索"),
+        BotCommand(command="recent", description="查看最近文件"),
+        BotCommand(command="myfiles", description="查看我的文件"),
+        BotCommand(command="get", description="按ID取回文件"),
+        BotCommand(command="id", description="查看你的用户ID"),
+        BotCommand(command="stats", description="查看文件统计"),
+        BotCommand(command="types", description="查看支持类型"),
+        BotCommand(command="ping", description="检查机器人在线"),
+    ]
+    if ADMIN_ID is not None:
+        commands.append(BotCommand(command="delete", description="管理员删除文件"))
+    return commands
+
+
+async def register_bot_commands() -> None:
+    try:
+        await bot.set_my_commands(_build_bot_commands())
+        logger.info("Bot command menu registered.")
+    except Exception:
+        logger.exception("Failed to register bot commands")
 
 
 def _extract_extension(name: str) -> Optional[str]:
@@ -996,6 +1027,24 @@ async def _build_search_view(
     return text, keyboard
 
 
+async def _send_recent_view(
+    msg: types.Message,
+    filter_key: str = "all",
+    page: int = 1,
+) -> None:
+    offset = max(0, (max(1, page) - 1) * SEARCH_LIMIT)
+    token = _create_search_token("")
+    can_delete = _is_admin_user(msg.from_user)
+    text, keyboard = await _build_search_view(
+        keyword="",
+        token=token,
+        filter_key=filter_key,
+        offset=offset,
+        can_delete=can_delete,
+    )
+    await msg.answer(text, reply_markup=keyboard)
+
+
 @dp.message(Command("start"))
 async def start(msg: types.Message) -> None:
     await msg.answer("网盘 Bot 已启动，直接输入关键词即可搜索。")
@@ -1015,8 +1064,10 @@ async def help_command(msg: types.Message) -> None:
         lines.append("6) 管理员可点“删除”按钮，或使用 /delete <文件ID>")
     lines.append("命令搜索: /search 关键词")
     lines.append("命令浏览: /recent [类型] [页码]")
+    lines.append("我的文件: /myfiles")
     lines.append("命令取回: /get 文件ID")
     lines.append("常用工具: /id /stats /types /ping")
+    lines.append("中文快捷词: 开始 / 帮助 / 我的文件")
 
     await msg.answer("\n".join(lines))
 
@@ -1128,17 +1179,38 @@ async def recent_command(msg: types.Message, command: CommandObject) -> None:
             )
             return
 
-    offset = max(0, (page - 1) * SEARCH_LIMIT)
-    token = _create_search_token("")
-    can_delete = _is_admin_user(msg.from_user)
-    text, keyboard = await _build_search_view(
-        keyword="",
-        token=token,
-        filter_key=filter_key,
-        offset=offset,
-        can_delete=can_delete,
-    )
-    await msg.answer(text, reply_markup=keyboard)
+    await _send_recent_view(msg, filter_key=filter_key, page=page)
+
+
+@dp.message(Command("myfiles"))
+async def myfiles_command(msg: types.Message) -> None:
+    await _send_recent_view(msg, filter_key="all", page=1)
+
+
+@dp.message(F.text)
+async def chinese_alias_command(msg: types.Message) -> None:
+    if msg.text is None:
+        return
+
+    alias_text = msg.text.strip()
+    if not alias_text or alias_text.startswith("/"):
+        return
+
+    alias_target = TEXT_COMMAND_ALIASES.get(alias_text)
+    if alias_target is None:
+        return
+
+    if alias_target == "start":
+        await start(msg)
+        return
+
+    if alias_target == "help":
+        await help_command(msg)
+        return
+
+    if alias_target == "myfiles":
+        await myfiles_command(msg)
+        return
 
 
 @dp.message(Command("get"))
@@ -1225,6 +1297,8 @@ async def search(msg: types.Message) -> None:
     keyword = msg.text.strip()
 
     if not keyword or keyword.startswith("/"):
+        return
+    if keyword in TEXT_COMMAND_ALIASES:
         return
 
     token = _create_search_token(keyword)

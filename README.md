@@ -10,7 +10,7 @@
 - 文件类型筛选（支持常用文档/视频/音频/图片/压缩包）
 - 点击按钮回传文件
 - 管理员删除文件（按钮删除或 `/delete 文件ID`）
-- 内置命令：`/start`、`/help`、`/search`、`/recent`、`/get`、`/id`、`/stats`、`/types`、`/ping`
+- 内置命令：`/start`、`/help`、`/search`、`/recent`、`/myfiles`、`/get`、`/id`、`/stats`、`/types`、`/ping`
 - 网页端支持：搜索、筛选、分页、下载、上传（管理员）
 - 数据库后端支持：`sqlite / supabase / mongodb / turso / neon`（部署时单选其一）
 - 支持 `polling` 和 `webhook` 两种运行方式
@@ -22,6 +22,7 @@
 - `/search 关键词`：命令方式搜索（和直接发关键词效果一致）
 - `/recent`：查看最新一页文件列表
 - `/recent pdf 2`：查看指定类型的第 2 页（页码可选）
+- `/myfiles`：快速查看文件列表（“我的文件”入口）
 - `/get 文件ID`：按文件 ID 直接取回文件
 - `/id`：查看你的 `User ID` 和当前 `Chat ID`（配置 `ADMIN_ID` 时很有用）
 - `/stats`：查看数据库统计（总文件数、总容量）
@@ -29,6 +30,12 @@
 - `/types`：查看支持的文件类型列表
 - `/ping`：快速检查机器人是否在线（返回 `pong`）
 - `/delete 文件ID`：删除文件记录（仅管理员可用）
+
+中文快捷词（无需 `/`）：
+
+- `开始`：等同 `/start`
+- `帮助`：等同 `/help`
+- `我的文件`：等同 `/myfiles`
 
 ## 环境要求
 

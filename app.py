@@ -20,6 +20,7 @@ from core import (
     dp,
     get_file,
     init_db,
+    register_bot_commands,
     search_file,
 )
 
@@ -339,6 +340,7 @@ async def api_delete_file(record_id: int, request: Request) -> dict[str, object]
 @app.on_event("startup")
 async def on_startup() -> None:
     await init_db()
+    await register_bot_commands()
     await bot.set_webhook(webhook_target)
     logger.info("Webhook has been set to %s", webhook_target)
 
