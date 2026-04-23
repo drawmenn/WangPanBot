@@ -19,11 +19,12 @@ from core import (
     close_db,
     delete_file_record,
     dp,
-    get_file,
+    get_file_detail,
     init_db,
     register_bot_commands,
     search_file,
 )
+from mtproto_streamer import mtproto_streamer
 
 WEBHOOK_PATH = os.getenv("WEBHOOK_PATH", "/webhook").strip() or "/webhook"
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL", "").strip()
@@ -292,13 +293,39 @@ async def api_upload(
 
 
 @app.get("/api/files/{record_id}/download")
-async def api_download_file(record_id: int) -> StreamingResponse:
+async def api_download_file(record_id: int, request: Request) -> StreamingResponse:
     _check_web_enabled()
-    file_data = await get_file(record_id)
-    if file_data is None:
+    file_detail = await get_file_detail(record_id)
+    if file_detail is None:
         raise HTTPException(status_code=404, detail="File not found.")
+    file_id, filename, file_size = file_detail
 
-    file_id, filename = file_data
+    mtproto_error: HTTPException | None = None
+    if mtproto_streamer.is_available:
+        try:
+            return await mtproto_streamer.stream_response(
+                request=request,
+                telegram_file_id=file_id,
+                filename=filename,
+                file_size=file_size,
+            )
+        except HTTPException as exc:
+            mtproto_error = exc
+            logger.warning(
+                "MTProto download failed for record %s: %s. Falling back to Bot API.",
+                record_id,
+                exc.detail,
+            )
+
+    try:
+        return await _download_via_bot_api(file_id=file_id, filename=filename)
+    except HTTPException:
+        if mtproto_error is not None and mtproto_error.status_code != 503:
+            raise mtproto_error
+        raise
+
+
+async def _download_via_bot_api(file_id: str, filename: str) -> StreamingResponse:
     try:
         telegram_file = await bot.get_file(file_id)
     except TelegramBadRequest as exc:
@@ -307,9 +334,8 @@ async def api_download_file(record_id: int) -> StreamingResponse:
             raise HTTPException(
                 status_code=413,
                 detail=(
-                    "文件超过 Telegram Bot API 直连下载限制（20MB）。"
-                    "请在 Telegram 中使用 /get 文件ID 获取，"
-                    "或改用本地 Bot API Server。"
+                    "File exceeds Telegram Bot API direct-download limit (20MB). "
+                    "Set API_ID/API_HASH to enable MTProto large-file web downloads."
                 ),
             ) from exc
         logger.exception("Failed to get telegram file metadata: %s", exc)
@@ -330,9 +356,8 @@ async def api_download_file(record_id: int) -> StreamingResponse:
             raise HTTPException(
                 status_code=413,
                 detail=(
-                    "文件超过 Telegram Bot API 直连下载限制（20MB）。"
-                    "请在 Telegram 中使用 /get 文件ID 获取，"
-                    "或改用本地 Bot API Server。"
+                    "File exceeds Telegram Bot API direct-download limit (20MB). "
+                    "Set API_ID/API_HASH to enable MTProto large-file web downloads."
                 ),
             ) from exc
         logger.exception("Failed to download telegram file content: %s", exc)
@@ -368,6 +393,7 @@ async def api_delete_file(record_id: int, request: Request) -> dict[str, object]
 async def on_startup() -> None:
     await init_db()
     await register_bot_commands()
+    await mtproto_streamer.start()
     await bot.set_webhook(webhook_target)
     logger.info("Webhook has been set to %s", webhook_target)
 
@@ -375,5 +401,6 @@ async def on_startup() -> None:
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await bot.delete_webhook()
+    await mtproto_streamer.stop()
     await close_db()
     await bot.session.close()

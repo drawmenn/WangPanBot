@@ -222,6 +222,9 @@ class FileStore(Protocol):
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         ...
 
+    async def get_file_detail(self, record_id: int) -> Optional[tuple[str, str, int]]:
+        ...
+
     async def delete_file_record(self, record_id: int) -> bool:
         ...
 
@@ -316,16 +319,23 @@ class SQLiteStore:
         )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        detail = await self.get_file_detail(record_id)
+        if detail is None:
+            return None
+        file_id, name, _ = detail
+        return file_id, name
+
+    async def get_file_detail(self, record_id: int) -> Optional[tuple[str, str, int]]:
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute(
-                "SELECT file_id, name FROM files WHERE id = ?",
+                "SELECT file_id, name, file_size FROM files WHERE id = ?",
                 (record_id,),
             )
             row = await cursor.fetchone()
 
         if row is None:
             return None
-        return str(row[0]), str(row[1])
+        return str(row[0]), str(row[1]), _normalize_file_size(int(row[2] or 0))
 
     async def delete_file_record(self, record_id: int) -> bool:
         async with aiosqlite.connect(self._db_path) as db:
@@ -470,16 +480,27 @@ class PostgresStore:
         )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        detail = await self.get_file_detail(record_id)
+        if detail is None:
+            return None
+        file_id, name, _ = detail
+        return file_id, name
+
+    async def get_file_detail(self, record_id: int) -> Optional[tuple[str, str, int]]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT file_id, name FROM files WHERE id = $1",
+                "SELECT file_id, name, file_size FROM files WHERE id = $1",
                 record_id,
             )
 
         if row is None:
             return None
-        return str(row["file_id"]), str(row["name"])
+        return (
+            str(row["file_id"]),
+            str(row["name"]),
+            _normalize_file_size(int(row["file_size"] or 0)),
+        )
 
     async def delete_file_record(self, record_id: int) -> bool:
         pool = await self._get_pool()
@@ -624,11 +645,11 @@ class TursoStore:
     ) -> tuple[list[tuple[int, str]], bool, int, int]:
         return await asyncio.to_thread(self._search_sync, keyword, extension, offset, limit)
 
-    def _get_file_sync(self, record_id: int) -> Optional[tuple[str, str]]:
+    def _get_file_detail_sync(self, record_id: int) -> Optional[tuple[str, str, int]]:
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT file_id, name FROM files WHERE id = ?",
+                "SELECT file_id, name, file_size FROM files WHERE id = ?",
                 (record_id,),
             ).fetchone()
         finally:
@@ -636,10 +657,17 @@ class TursoStore:
 
         if row is None:
             return None
-        return str(row[0]), str(row[1])
+        return str(row[0]), str(row[1]), _normalize_file_size(int(row[2] or 0))
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
-        return await asyncio.to_thread(self._get_file_sync, record_id)
+        detail = await self.get_file_detail(record_id)
+        if detail is None:
+            return None
+        file_id, name, _ = detail
+        return file_id, name
+
+    async def get_file_detail(self, record_id: int) -> Optional[tuple[str, str, int]]:
+        return await asyncio.to_thread(self._get_file_detail_sync, record_id)
 
     def _delete_sync(self, record_id: int) -> bool:
         conn = self._connect()
@@ -791,13 +819,24 @@ class MongoStore:
         )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
+        detail = await self.get_file_detail(record_id)
+        if detail is None:
+            return None
+        file_id, name, _ = detail
+        return file_id, name
+
+    async def get_file_detail(self, record_id: int) -> Optional[tuple[str, str, int]]:
         row = await self._files.find_one(
             {"record_id": record_id},
-            {"_id": 0, "file_id": 1, "name": 1},
+            {"_id": 0, "file_id": 1, "name": 1, "file_size": 1},
         )
         if row is None:
             return None
-        return str(row["file_id"]), str(row["name"])
+        return (
+            str(row["file_id"]),
+            str(row["name"]),
+            _normalize_file_size(int(row.get("file_size", 0) or 0)),
+        )
 
     async def delete_file_record(self, record_id: int) -> bool:
         result = await self._files.delete_one({"record_id": record_id})
@@ -904,6 +943,10 @@ async def search_file(
 
 async def get_file(record_id: int) -> Optional[tuple[str, str]]:
     return await file_store.get_file(record_id=record_id)
+
+
+async def get_file_detail(record_id: int) -> Optional[tuple[str, str, int]]:
+    return await file_store.get_file_detail(record_id=record_id)
 
 
 async def delete_file_record(record_id: int) -> bool:

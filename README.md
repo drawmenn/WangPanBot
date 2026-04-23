@@ -286,3 +286,35 @@ kubectl -n wangpanbot logs deploy/wangpanbot -f
 - `bot.py` polling 鍏ュ彛
 - `app.py` webhook 鍏ュ彛
 - `k8s/` Kubernetes 閮ㄧ讲娓呭崟
+
+## 大文件网页下载（>20MB）
+
+现在网页下载支持两种模式：
+
+1. 默认回退模式（Bot API）
+- 无需额外配置
+- 但单文件超过 20MB 可能失败
+
+2. MTProto 流式模式（推荐）
+- 需要配置 `API_ID` + `API_HASH`
+- 配置后，`/api/files/{id}/download` 会走 MTProto 分块流式下载，支持大文件和 Range 断点续传
+
+### 需要新增的环境变量
+
+```env
+API_ID=12345678
+API_HASH=your_api_hash
+MTPROTO_DOWNLOAD_ENABLED=1
+```
+
+可选变量：
+
+```env
+MTPROTO_SESSION_NAME=wangpanbot_mtproto
+MTPROTO_WORKDIR=.mtproto
+MTPROTO_CHUNK_SIZE=1048576
+```
+
+说明：
+- `API_ID/API_HASH` 在 `https://my.telegram.org` 创建应用后获取
+- 如果没有配置这两个变量，系统会自动使用 Bot API 回退下载逻辑

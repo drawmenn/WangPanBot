@@ -8,7 +8,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py bot.py core.py ./
+COPY app.py bot.py core.py mtproto_streamer.py ./
 COPY web ./web
 
 RUN useradd --create-home --uid 10001 appuser
