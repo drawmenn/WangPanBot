@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: wangpanbot
+    runtime: python
+    plan: free
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
+    healthCheckPath: /healthz
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SEARCH_LIMIT
+        value: "5"
+      - key: WEBHOOK_PATH
+        value: /webhook

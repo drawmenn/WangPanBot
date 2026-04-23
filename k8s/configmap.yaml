@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wangpanbot-config
+  namespace: wangpanbot
+data:
+  WEBHOOK_PATH: /webhook
+  WEBHOOK_BASE_URL: https://bot.example.com
+  DB_PATH: /data/data.db
+  SEARCH_LIMIT: "5"
