@@ -58,6 +58,76 @@ Webhook 变量（仅 `app.py` 模式）：
 - 或 `WEBHOOK_BASE_URL` + `WEBHOOK_PATH`
 - Render 可不填域名，自动使用 `RENDER_EXTERNAL_URL`
 
+## 配置模板
+
+下面是可直接复制的 `.env` 模板。你只需要选一个数据库模板使用。
+
+通用最小模板（所有方案都要有）：
+
+```env
+BOT_TOKEN=123456:your_telegram_bot_token
+ADMIN_ID=
+SEARCH_LIMIT=5
+SEARCH_SESSION_TTL_SECONDS=1800
+```
+
+模板 A：SQLite（最简单，单机/测试）：
+
+```env
+DB_PROVIDER=sqlite
+DB_PATH=data.db
+```
+
+模板 B：Supabase（Postgres）：
+
+```env
+DB_PROVIDER=supabase
+SUPABASE_DATABASE_URL=postgresql://username:password@host:5432/postgres
+POSTGRES_POOL_SIZE=5
+```
+
+模板 C：Neon（Postgres）：
+
+```env
+DB_PROVIDER=neon
+NEON_DATABASE_URL=postgresql://username:password@host:5432/dbname?sslmode=require
+POSTGRES_POOL_SIZE=5
+```
+
+模板 D：MongoDB Atlas：
+
+```env
+DB_PROVIDER=mongodb
+MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/?retryWrites=true&w=majority
+MONGODB_DB_NAME=wangpanbot
+MONGODB_COLLECTION_NAME=files
+```
+
+模板 E：Turso（libSQL）：
+
+```env
+DB_PROVIDER=turso
+TURSO_DATABASE_URL=libsql://your-db-your-org.turso.io
+TURSO_AUTH_TOKEN=your_turso_auth_token
+TURSO_LOCAL_PATH=
+```
+
+轮询模式（`bot.py`）不需要 webhook 变量。
+
+Webhook 模式（`app.py`）加上其中一组：
+
+```env
+WEBHOOK_URL=https://your-domain.com/webhook
+WEBHOOK_PATH=/webhook
+```
+
+或
+
+```env
+WEBHOOK_BASE_URL=https://your-domain.com
+WEBHOOK_PATH=/webhook
+```
+
 ## 本地运行（Polling）
 
 ```bash
