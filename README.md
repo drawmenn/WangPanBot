@@ -10,8 +10,24 @@
 - 文件类型筛选（支持常用文档/视频/音频/图片/压缩包）
 - 点击按钮回传文件
 - 管理员删除文件（按钮删除或 `/delete 文件ID`）
+- 内置命令：`/start`、`/help`、`/search`、`/recent`、`/get`、`/id`、`/stats`、`/types`、`/ping`
 - 数据库后端支持：`sqlite / supabase / mongodb / turso / neon`（部署时单选其一）
 - 支持 `polling` 和 `webhook` 两种运行方式
+
+## 命令
+
+- `/start`：启动提示
+- `/help`：查看使用说明
+- `/search 关键词`：命令方式搜索（和直接发关键词效果一致）
+- `/recent`：查看最新一页文件列表
+- `/recent pdf 2`：查看指定类型的第 2 页（页码可选）
+- `/get 文件ID`：按文件 ID 直接取回文件
+- `/id`：查看你的 `User ID` 和当前 `Chat ID`（配置 `ADMIN_ID` 时很有用）
+- `/stats`：查看数据库统计（总文件数、总容量）
+- `/stats pdf`：查看指定类型统计（支持 `pdf/doc/mp4/zip` 等）
+- `/types`：查看支持的文件类型列表
+- `/ping`：快速检查机器人是否在线（返回 `pong`）
+- `/delete 文件ID`：删除文件记录（仅管理员可用）
 
 ## 环境要求
 
@@ -57,6 +73,8 @@ pip install -r requirements.txt
 - `SEARCH_LIMIT`：每页显示多少条，默认 `5`  
 - `SEARCH_SESSION_TTL_SECONDS`：分页会话多久过期（秒），默认 `1800`  
 - `POSTGRES_POOL_SIZE`：Postgres 连接池大小，默认 `5`（仅 Supabase/Neon 用到）
+- `WEB_UI_ENABLED`：是否启用网页端，默认 `1`（开启）
+- `WEB_ADMIN_TOKEN`：网页管理删除令牌（可选，不填则网页端为只读）
 
 `ADMIN_ID` 速查模板：
 
@@ -167,6 +185,27 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 ```text
 GET /healthz
 ```
+
+## 网页端（Drive）
+
+项目内置了轻量网页管理页，地址：
+
+```text
+GET /drive
+```
+
+支持功能：
+
+- 关键词搜索
+- 类型筛选
+- 分页浏览
+- 复制 `/get 文件ID` 命令
+- 网页端删除（需要配置 `WEB_ADMIN_TOKEN`，并在页面中填写）
+
+说明：
+
+- 未配置 `WEB_ADMIN_TOKEN` 时，网页仍可查看与搜索，但删除按钮不可用
+- 网页端是管理辅助，不影响 Telegram 机器人命令
 
 ## Render 免费部署
 

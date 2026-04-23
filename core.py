@@ -976,10 +976,14 @@ async def _build_search_view(
         f"总文件: {total_count} | 总容量: {_format_size(total_size)} | 本页: {len(results)}"
     )
 
-    if results:
-        text = f"搜索结果\n关键词: {keyword}\n{summary_line}"
+    if keyword:
+        title = "搜索结果" if results else "没找到相关文件"
+        keyword_line = f"关键词: {keyword}"
     else:
-        text = f"没找到相关文件\n关键词: {keyword}\n{summary_line}"
+        title = "文件列表" if results else "当前还没有文件"
+        keyword_line = "关键词: （全部）"
+
+    text = f"{title}\n{keyword_line}\n{summary_line}"
 
     keyboard = _build_search_keyboard(
         results=results,
@@ -1009,8 +1013,157 @@ async def help_command(msg: types.Message) -> None:
     ]
     if ADMIN_ID is not None:
         lines.append("6) 管理员可点“删除”按钮，或使用 /delete <文件ID>")
+    lines.append("命令搜索: /search 关键词")
+    lines.append("命令浏览: /recent [类型] [页码]")
+    lines.append("命令取回: /get 文件ID")
+    lines.append("常用工具: /id /stats /types /ping")
 
     await msg.answer("\n".join(lines))
+
+
+@dp.message(Command("id"))
+async def id_command(msg: types.Message) -> None:
+    if msg.from_user is None:
+        await msg.answer("无法识别当前用户 ID。")
+        return
+
+    lines = [
+        f"你的 User ID: {msg.from_user.id}",
+        f"当前 Chat ID: {msg.chat.id}",
+        f"Chat 类型: {msg.chat.type}",
+    ]
+    if ADMIN_ID is not None:
+        lines.append(f"是否管理员: {'是' if _is_admin_user(msg.from_user) else '否'}")
+    await msg.answer("\n".join(lines))
+
+
+@dp.message(Command("stats"))
+async def stats_command(msg: types.Message, command: CommandObject) -> None:
+    filter_key = "all"
+    if command.args is not None and command.args.strip():
+        requested = command.args.strip().lower()
+        if requested not in FILTER_LABELS:
+            available = ", ".join(FILTER_LABELS.keys())
+            await msg.answer(
+                f"不支持的类型: {requested}\n"
+                f"用法: /stats [类型]\n"
+                f"例如: /stats pdf\n"
+                f"可选类型: {available}"
+            )
+            return
+        filter_key = requested
+
+    extension = _filter_to_extension(filter_key)
+    _, _, total_count, total_size = await search_file(
+        keyword="",
+        extension=extension,
+        offset=0,
+        limit=1,
+    )
+    filter_label = FILTER_LABELS[filter_key]
+    await msg.answer(
+        f"数据库统计\n"
+        f"类型: {filter_label}\n"
+        f"文件总数: {total_count}\n"
+        f"总容量: {_format_size(total_size)}"
+    )
+
+
+@dp.message(Command("types"))
+async def types_command(msg: types.Message) -> None:
+    all_types = [key.upper() for key in FILTER_LABELS.keys() if key != "all"]
+    await msg.answer(
+        "当前支持的文件类型:\n"
+        + ", ".join(all_types)
+        + "\n\n发送关键词后，也可以直接点筛选按钮切换类型。"
+    )
+
+
+@dp.message(Command("ping"))
+async def ping_command(msg: types.Message) -> None:
+    await msg.answer("pong")
+
+
+@dp.message(Command("search"))
+async def search_by_command(msg: types.Message, command: CommandObject) -> None:
+    if command.args is None or not command.args.strip():
+        await msg.answer("用法: /search 关键词\n例如: /search 设计文档")
+        return
+
+    keyword = command.args.strip()
+    token = _create_search_token(keyword)
+    can_delete = _is_admin_user(msg.from_user)
+    text, keyboard = await _build_search_view(
+        keyword=keyword,
+        token=token,
+        filter_key="all",
+        offset=0,
+        can_delete=can_delete,
+    )
+    await msg.answer(text, reply_markup=keyboard)
+
+
+@dp.message(Command("recent"))
+async def recent_command(msg: types.Message, command: CommandObject) -> None:
+    filter_key = "all"
+    page = 1
+
+    if command.args is not None and command.args.strip():
+        for part in command.args.split():
+            value = part.strip().lower()
+            if not value:
+                continue
+            if value.isdigit():
+                page = max(1, int(value))
+                continue
+            if value in FILTER_LABELS:
+                filter_key = value
+                continue
+
+            await msg.answer(
+                "用法: /recent [类型] [页码]\n"
+                "例如: /recent\n"
+                "例如: /recent pdf\n"
+                "例如: /recent pdf 2"
+            )
+            return
+
+    offset = max(0, (page - 1) * SEARCH_LIMIT)
+    token = _create_search_token("")
+    can_delete = _is_admin_user(msg.from_user)
+    text, keyboard = await _build_search_view(
+        keyword="",
+        token=token,
+        filter_key=filter_key,
+        offset=offset,
+        can_delete=can_delete,
+    )
+    await msg.answer(text, reply_markup=keyboard)
+
+
+@dp.message(Command("get"))
+async def get_by_command(msg: types.Message, command: CommandObject) -> None:
+    if command.args is None or not command.args.strip():
+        await msg.answer("用法: /get 文件ID\n例如: /get 123")
+        return
+
+    try:
+        record_id = int(command.args.strip())
+    except ValueError:
+        await msg.answer("文件ID 必须是整数。")
+        return
+
+    file_data = await get_file(record_id)
+    if file_data is None:
+        await msg.answer("文件不存在或已删除。")
+        return
+
+    file_id, name = file_data
+    caption = name
+    if _is_admin_user(msg.from_user):
+        caption = f"[ID:{record_id}] {name}"
+
+    await msg.answer_document(file_id, caption=caption)
 
 
 @dp.message(Command("delete"))

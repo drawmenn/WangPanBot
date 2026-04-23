@@ -1,0 +1,277 @@
+:root {
+  --bg0: #06181a;
+  --bg1: #0d2527;
+  --panel: #102e31cc;
+  --line: #2f5457;
+  --text: #eef9f7;
+  --muted: #98b4b1;
+  --accent: #1fcaa6;
+  --accent-2: #f6b34b;
+  --danger: #ff6f61;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  color: var(--text);
+  font-family: "Space Grotesk", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 15% 10%, #174447 0, var(--bg0) 40%),
+    linear-gradient(140deg, #041112, #0b2022 55%, #11292c);
+}
+
+.bg-layer {
+  position: fixed;
+  inset: 0;
+  background-image: linear-gradient(
+      120deg,
+      rgba(31, 202, 166, 0.08),
+      rgba(246, 179, 75, 0.06)
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 27px,
+      rgba(255, 255, 255, 0.02) 28px
+    );
+  pointer-events: none;
+}
+
+.page {
+  width: min(1100px, 92vw);
+  margin: 28px auto 40px;
+  position: relative;
+  z-index: 1;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.topbar h1 {
+  margin: 0 0 4px;
+  font-size: clamp(28px, 4vw, 42px);
+  letter-spacing: 0.6px;
+}
+
+.topbar p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 18px;
+  backdrop-filter: blur(8px);
+}
+
+.search-panel {
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.search-row {
+  display: grid;
+  grid-template-columns: 1fr 170px 100px 110px;
+  gap: 10px;
+}
+
+input,
+select,
+button {
+  border-radius: 12px;
+  border: 1px solid #2f5c5f;
+  padding: 10px 12px;
+  font-size: 14px;
+  background: #0d2224;
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(120deg, #1fcaa6, #1d97b7);
+  border: none;
+  color: #02231f;
+  font-weight: 700;
+}
+
+button:hover {
+  filter: brightness(1.05);
+}
+
+.token-area {
+  margin-top: 12px;
+}
+
+.token-area summary {
+  cursor: pointer;
+  color: var(--accent-2);
+  font-weight: 700;
+}
+
+.token-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.token-row input {
+  min-width: 280px;
+  flex: 1 1 320px;
+}
+
+.help-text {
+  color: var(--muted);
+  margin-top: 8px;
+  margin-bottom: 2px;
+  font-size: 13px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.card {
+  padding: 14px;
+}
+
+.card .label {
+  color: var(--muted);
+  font-size: 13px;
+  display: block;
+}
+
+.card strong {
+  margin-top: 6px;
+  display: block;
+  font-size: 20px;
+  color: #f4fffd;
+}
+
+.table-panel {
+  padding: 14px;
+}
+
+.table-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.table-head h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.table-head p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 640px;
+}
+
+thead th {
+  text-align: left;
+  font-size: 13px;
+  color: #c5e7e2;
+  background: #0a2021;
+  border-bottom: 1px solid var(--line);
+  padding: 12px;
+}
+
+tbody td {
+  padding: 12px;
+  border-bottom: 1px solid #244648;
+  vertical-align: top;
+}
+
+tbody tr:hover {
+  background: #113336;
+}
+
+.name-cell {
+  word-break: break-word;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.action-row .minor {
+  background: #17393c;
+  color: #d6f2ee;
+  border: 1px solid #2f595d;
+}
+
+.action-row .danger {
+  background: #3a1b1b;
+  color: #ffd5d0;
+  border: 1px solid #80312b;
+}
+
+.pager {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.pager button[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  .search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .pager {
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 560px) {
+  .topbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+}

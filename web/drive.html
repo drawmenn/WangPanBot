@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WangPanBot Drive</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/web/drive.css" />
+  </head>
+  <body>
+    <div class="bg-layer"></div>
+    <main class="page">
+      <header class="topbar">
+        <div>
+          <h1>WangPanBot Drive</h1>
+          <p>网页端文件检索与管理</p>
+        </div>
+        <button id="refreshBtn" type="button">刷新</button>
+      </header>
+
+      <section class="panel search-panel">
+        <form id="searchForm">
+          <div class="search-row">
+            <input
+              id="keywordInput"
+              type="text"
+              placeholder="输入关键词，例如：教程 / mp4 / 设计文档"
+            />
+            <select id="typeSelect"></select>
+            <input id="pageInput" type="number" min="1" value="1" />
+            <button type="submit">搜索</button>
+          </div>
+        </form>
+        <details class="token-area">
+          <summary>管理员删除令牌（可选）</summary>
+          <div class="token-row">
+            <input
+              id="tokenInput"
+              type="password"
+              placeholder="WEB_ADMIN_TOKEN"
+              autocomplete="off"
+            />
+            <button id="saveTokenBtn" type="button">保存令牌</button>
+            <button id="clearTokenBtn" type="button">清空令牌</button>
+          </div>
+          <p class="help-text">
+            未配置令牌时，本页仍可查看与搜索，但网页删除功能会禁用。
+          </p>
+        </details>
+      </section>
+
+      <section class="stats-grid">
+        <article class="panel card">
+          <span class="label">总文件数</span>
+          <strong id="totalCount">-</strong>
+        </article>
+        <article class="panel card">
+          <span class="label">总容量</span>
+          <strong id="totalSize">-</strong>
+        </article>
+        <article class="panel card">
+          <span class="label">当前页</span>
+          <strong id="currentPage">-</strong>
+        </article>
+        <article class="panel card">
+          <span class="label">筛选类型</span>
+          <strong id="filterLabel">-</strong>
+        </article>
+      </section>
+
+      <section class="panel table-panel">
+        <div class="table-head">
+          <h2>文件列表</h2>
+          <p id="statusText">等待查询</p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>文件名</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="fileTableBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <button id="prevBtn" type="button">上一页</button>
+          <span id="pagerText">第 1 页</span>
+          <button id="nextBtn" type="button">下一页</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="/web/drive.js"></script>
+  </body>
+</html>
