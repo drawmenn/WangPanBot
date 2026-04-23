@@ -54,6 +54,16 @@
         </details>
       </section>
 
+      <section class="panel upload-panel">
+        <div class="upload-row">
+          <input id="uploadInput" type="file" />
+          <button id="uploadBtn" type="button">上传文件</button>
+        </div>
+        <p id="uploadHint" class="help-text">
+          上传需要管理员令牌，并且服务端需配置 `WEB_UPLOAD_CHAT_ID` 或 `ADMIN_ID`。
+        </p>
+      </section>
+
       <section class="stats-grid">
         <article class="panel card">
           <span class="label">总文件数</span>

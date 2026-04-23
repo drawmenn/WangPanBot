@@ -1,19 +1,24 @@
 import logging
 import os
 import secrets
+import io
 from pathlib import Path
+from urllib.parse import quote
 
 from aiogram import types
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import (
+    ADMIN_ID,
     FILTER_LABELS,
+    add_or_update_file,
     bot,
     close_db,
     delete_file_record,
     dp,
+    get_file,
     init_db,
     search_file,
 )
@@ -29,6 +34,7 @@ WEB_UI_ENABLED = os.getenv("WEB_UI_ENABLED", "1").strip().lower() not in {
     "off",
 }
 WEB_ADMIN_TOKEN = os.getenv("WEB_ADMIN_TOKEN", "").strip()
+WEB_UPLOAD_CHAT_ID = os.getenv("WEB_UPLOAD_CHAT_ID", "").strip()
 
 BASE_DIR = Path(__file__).resolve().parent
 WEB_DIR = BASE_DIR / "web"
@@ -98,6 +104,19 @@ def _require_web_admin(request: Request) -> None:
 def _check_web_enabled() -> None:
     if not WEB_UI_ENABLED:
         raise HTTPException(status_code=404, detail="Web UI disabled.")
+
+
+def _resolve_upload_chat_id() -> int | None:
+    if WEB_UPLOAD_CHAT_ID:
+        try:
+            return int(WEB_UPLOAD_CHAT_ID)
+        except ValueError:
+            logger.warning("Invalid WEB_UPLOAD_CHAT_ID: %s", WEB_UPLOAD_CHAT_ID)
+
+    if ADMIN_ID is not None:
+        return int(ADMIN_ID)
+
+    return None
 
 
 @app.get("/")
@@ -205,8 +224,106 @@ async def api_files(
         "permissions": {
             "is_web_admin": _is_web_admin(request),
             "delete_enabled": bool(WEB_ADMIN_TOKEN),
+            "upload_enabled": _resolve_upload_chat_id() is not None,
         },
     }
+
+
+@app.post("/api/upload")
+async def api_upload(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, object]:
+    _check_web_enabled()
+    _require_web_admin(request)
+
+    upload_chat_id = _resolve_upload_chat_id()
+    if upload_chat_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Set WEB_UPLOAD_CHAT_ID or ADMIN_ID to enable web upload.",
+        )
+
+    filename = (file.filename or "upload.bin").strip() or "upload.bin"
+    payload = await file.read()
+    await file.close()
+
+    if not payload:
+        raise HTTPException(status_code=400, detail="Empty file.")
+
+    document = types.BufferedInputFile(payload, filename=filename)
+    try:
+        sent_message = await bot.send_document(
+            chat_id=upload_chat_id,
+            document=document,
+            caption=f"Web upload: {filename}",
+        )
+    except Exception as exc:
+        logger.exception("Web upload send_document failed: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to upload file to Telegram storage chat.",
+        ) from exc
+
+    if sent_message.document is None or not sent_message.document.file_id:
+        raise HTTPException(status_code=502, detail="Telegram did not return file_id.")
+
+    file_size = sent_message.document.file_size
+    if file_size is None:
+        file_size = len(payload)
+
+    is_new = await add_or_update_file(
+        name=filename,
+        file_id=sent_message.document.file_id,
+        file_size=int(file_size),
+    )
+
+    return {
+        "ok": True,
+        "is_new": is_new,
+        "item": {
+            "name": filename,
+            "file_id": sent_message.document.file_id,
+            "file_size": int(file_size),
+        },
+    }
+
+
+@app.get("/api/files/{record_id}/download")
+async def api_download_file(record_id: int) -> StreamingResponse:
+    _check_web_enabled()
+    file_data = await get_file(record_id)
+    if file_data is None:
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    file_id, filename = file_data
+    try:
+        telegram_file = await bot.get_file(file_id)
+    except Exception as exc:
+        logger.exception("Failed to get telegram file metadata: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to fetch file metadata.") from exc
+
+    if not telegram_file.file_path:
+        raise HTTPException(status_code=502, detail="Telegram file path is empty.")
+
+    buffer = io.BytesIO()
+    try:
+        await bot.download_file(telegram_file.file_path, destination=buffer)
+    except Exception as exc:
+        logger.exception("Failed to download telegram file content: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to download file content.") from exc
+
+    buffer.seek(0)
+    safe_name = quote(filename, safe="")
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{safe_name}",
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(
+        buffer,
+        media_type="application/octet-stream",
+        headers=headers,
+    )
 
 
 @app.delete("/api/files/{record_id}")

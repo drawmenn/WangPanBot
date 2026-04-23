@@ -6,6 +6,11 @@ const state = {
   totalPages: 1,
   hasNext: false,
   token: "",
+  permissions: {
+    is_web_admin: false,
+    delete_enabled: false,
+    upload_enabled: false,
+  },
 };
 
 const refs = {
@@ -26,6 +31,9 @@ const refs = {
   tokenInput: document.getElementById("tokenInput"),
   saveTokenBtn: document.getElementById("saveTokenBtn"),
   clearTokenBtn: document.getElementById("clearTokenBtn"),
+  uploadInput: document.getElementById("uploadInput"),
+  uploadBtn: document.getElementById("uploadBtn"),
+  uploadHint: document.getElementById("uploadHint"),
 };
 
 function escapeHtml(value) {
@@ -88,6 +96,7 @@ function renderTable(items, permissions) {
           <td class="name-cell">${name}</td>
           <td>
             <div class="action-row">
+              <a class="minor" href="/api/files/${id}/download" target="_blank" rel="noopener">下载</a>
               <button class="minor copy-btn" data-command="${command}" type="button">复制命令</button>
               ${
                 allowDelete
@@ -129,6 +138,22 @@ function renderTable(items, permissions) {
   });
 }
 
+function syncUploadStatus() {
+  const canUpload = state.permissions.is_web_admin && state.permissions.upload_enabled;
+  refs.uploadBtn.disabled = !canUpload;
+
+  if (!state.permissions.upload_enabled) {
+    refs.uploadHint.textContent =
+      "服务端未配置 WEB_UPLOAD_CHAT_ID 或 ADMIN_ID，当前无法网页上传。";
+    return;
+  }
+  if (!state.permissions.is_web_admin) {
+    refs.uploadHint.textContent = "请先填写管理员令牌，才可网页上传。";
+    return;
+  }
+  refs.uploadHint.textContent = "已启用网页上传。上传后会自动写入数据库。";
+}
+
 async function loadFilters() {
   const data = await requestJson("/api/filters");
   refs.typeSelect.innerHTML = data.filters
@@ -154,6 +179,7 @@ async function loadFiles() {
     const data = await requestJson(`/api/files?${params.toString()}`);
     const summary = data.summary;
     const pagination = data.pagination;
+    state.permissions = data.permissions || state.permissions;
     state.totalPages = Number(pagination.total_pages || 1);
     state.page = Number(pagination.page || 1);
     state.hasNext = Boolean(pagination.has_next);
@@ -171,6 +197,7 @@ async function loadFiles() {
       : "关键词: （全部）";
 
     renderTable(data.items || [], data.permissions || {});
+    syncUploadStatus();
   } catch (error) {
     refs.tableBody.innerHTML = `
       <tr>
@@ -219,6 +246,30 @@ function bindEvents() {
     localStorage.removeItem("wangpan_web_admin_token");
     refs.statusText.textContent = "管理员令牌已清空";
     await loadFiles();
+  });
+
+  refs.uploadBtn.addEventListener("click", async () => {
+    if (!refs.uploadInput.files || refs.uploadInput.files.length === 0) {
+      refs.statusText.textContent = "请选择要上传的文件。";
+      return;
+    }
+    const file = refs.uploadInput.files[0];
+    const formData = new FormData();
+    formData.append("file", file);
+
+    refs.statusText.textContent = "上传中...";
+    try {
+      const data = await requestJson("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+      const status = data.is_new ? "已收录" : "已更新";
+      refs.statusText.textContent = `${status}: ${file.name}`;
+      refs.uploadInput.value = "";
+      await loadFiles();
+    } catch (error) {
+      refs.statusText.textContent = `上传失败: ${error.message}`;
+    }
   });
 }
 

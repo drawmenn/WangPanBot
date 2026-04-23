@@ -80,6 +80,17 @@ body {
   margin-bottom: 16px;
 }
 
+.upload-panel {
+  padding: 14px;
+  margin-bottom: 16px;
+}
+
+.upload-row {
+  display: grid;
+  grid-template-columns: 1fr 130px;
+  gap: 10px;
+}
+
 .search-row {
   display: grid;
   grid-template-columns: 1fr 170px 100px 110px;
@@ -232,6 +243,16 @@ tbody tr:hover {
   border: 1px solid #2f595d;
 }
 
+.action-row a.minor {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+
 .action-row .danger {
   background: #3a1b1b;
   color: #ffd5d0;
@@ -253,6 +274,10 @@ tbody tr:hover {
 
 @media (max-width: 900px) {
   .search-row {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-row {
     grid-template-columns: 1fr;
   }
 
