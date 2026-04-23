@@ -58,6 +58,21 @@ pip install -r requirements.txt
 - `SEARCH_SESSION_TTL_SECONDS`：分页会话多久过期（秒），默认 `1800`  
 - `POSTGRES_POOL_SIZE`：Postgres 连接池大小，默认 `5`（仅 Supabase/Neon 用到）
 
+`ADMIN_ID` 速查模板：
+
+```env
+# 开启管理员限制（推荐）
+ADMIN_ID=123456789
+
+# 不限制管理员（留空）
+ADMIN_ID=
+```
+
+说明：
+
+- `ADMIN_ID` 必须是“纯数字 Telegram 用户 ID”，不是用户名（例如不是 `@abc`）  
+- 可在 Telegram 里找 `@userinfobot`（或 `@getmyid_bot`）发消息获取数字 ID
+
 ## 配置模板
 
 下面是可直接复制的 `.env` 模板。你只需要选一个数据库模板使用。
