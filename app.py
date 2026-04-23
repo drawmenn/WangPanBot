@@ -5,7 +5,7 @@ from pathlib import Path
 
 from aiogram import types
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import (
@@ -98,6 +98,13 @@ def _require_web_admin(request: Request) -> None:
 def _check_web_enabled() -> None:
     if not WEB_UI_ENABLED:
         raise HTTPException(status_code=404, detail="Web UI disabled.")
+
+
+@app.get("/")
+async def root() -> object:
+    if WEB_UI_ENABLED:
+        return RedirectResponse(url="/drive", status_code=307)
+    return {"ok": True, "message": "WangPanBot is running"}
 
 
 @app.get("/healthz")
