@@ -150,6 +150,25 @@ def _short_button_text(text: str, limit: int = 42) -> str:
     return f"{text[:limit - 3]}..."
 
 
+def _normalize_file_size(file_size: Optional[int]) -> int:
+    if file_size is None:
+        return 0
+    if file_size < 0:
+        return 0
+    return int(file_size)
+
+
+def _format_size(total_bytes: int) -> str:
+    size = float(max(0, int(total_bytes)))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    for unit in units:
+        if size < 1024.0 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+
+
 class FileStore(Protocol):
     async def init(self) -> None:
         ...
@@ -157,7 +176,7 @@ class FileStore(Protocol):
     async def close(self) -> None:
         ...
 
-    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+    async def add_or_update_file(self, name: str, file_id: str, file_size: int) -> bool:
         ...
 
     async def search_file(
@@ -166,7 +185,7 @@ class FileStore(Protocol):
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         ...
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
@@ -188,29 +207,37 @@ class SQLiteStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
+                    file_size INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+            try:
+                await db.execute(
+                    "ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0"
+                )
+            except Exception:
+                pass
             await db.commit()
 
     async def close(self) -> None:
         return None
 
-    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+    async def add_or_update_file(self, name: str, file_id: str, file_size: int) -> bool:
         async with aiosqlite.connect(self._db_path) as db:
             cursor = await db.execute("SELECT 1 FROM files WHERE file_id = ?", (file_id,))
             exists = await cursor.fetchone() is not None
 
             await db.execute(
                 """
-                INSERT INTO files (name, file_id)
-                VALUES (?, ?)
+                INSERT INTO files (name, file_id, file_size)
+                VALUES (?, ?, ?)
                 ON CONFLICT(file_id) DO UPDATE SET
-                    name = excluded.name
+                    name = excluded.name,
+                    file_size = excluded.file_size
                 """,
-                (name, file_id),
+                (name, file_id, _normalize_file_size(file_size)),
             )
             await db.commit()
             return not exists
@@ -221,28 +248,41 @@ class SQLiteStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         async with aiosqlite.connect(self._db_path) as db:
-            query = """
-                SELECT id, name
-                FROM files
-                WHERE LOWER(name) LIKE LOWER(?)
-            """
-            params: list[object] = [f"%{keyword}%"]
+            where_clause = "WHERE LOWER(name) LIKE LOWER(?)"
+            where_params: list[object] = [f"%{keyword}%"]
 
             if extension is not None:
-                query += " AND LOWER(name) LIKE ?"
-                params.append(f"%.{extension.lower()}")
+                where_clause += " AND LOWER(name) LIKE ?"
+                where_params.append(f"%.{extension.lower()}")
 
-            query += " ORDER BY id DESC LIMIT ? OFFSET ?"
-            params.extend([limit + 1, max(0, offset)])
-
-            cursor = await db.execute(query, tuple(params))
+            query = (
+                "SELECT id, name FROM files "
+                f"{where_clause} "
+                "ORDER BY id DESC LIMIT ? OFFSET ?"
+            )
+            query_params = [*where_params, limit + 1, max(0, offset)]
+            cursor = await db.execute(query, tuple(query_params))
             rows = await cursor.fetchall()
+
+            stats_query = (
+                "SELECT COUNT(1), COALESCE(SUM(file_size), 0) "
+                f"FROM files {where_clause}"
+            )
+            stats_cursor = await db.execute(stats_query, tuple(where_params))
+            stats_row = await stats_cursor.fetchone()
 
         has_next = len(rows) > limit
         visible_rows = rows[:limit]
-        return [(int(row[0]), str(row[1])) for row in visible_rows], has_next
+        total_count = int(stats_row[0]) if stats_row is not None else 0
+        total_size = int(stats_row[1]) if stats_row is not None else 0
+        return (
+            [(int(row[0]), str(row[1])) for row in visible_rows],
+            has_next,
+            total_count,
+            total_size,
+        )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         async with aiosqlite.connect(self._db_path) as db:
@@ -297,9 +337,13 @@ class PostgresStore:
                     id BIGSERIAL PRIMARY KEY,
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
+                    file_size BIGINT NOT NULL DEFAULT 0,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
                 """
+            )
+            await conn.execute(
+                "ALTER TABLE files ADD COLUMN IF NOT EXISTS file_size BIGINT NOT NULL DEFAULT 0"
             )
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
 
@@ -309,19 +353,21 @@ class PostgresStore:
         await self._pool.close()
         self._pool = None
 
-    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+    async def add_or_update_file(self, name: str, file_id: str, file_size: int) -> bool:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             exists = await conn.fetchval("SELECT 1 FROM files WHERE file_id = $1", file_id)
             await conn.execute(
                 """
-                INSERT INTO files (name, file_id)
-                VALUES ($1, $2)
+                INSERT INTO files (name, file_id, file_size)
+                VALUES ($1, $2, $3)
                 ON CONFLICT(file_id) DO UPDATE SET
-                    name = EXCLUDED.name
+                    name = EXCLUDED.name,
+                    file_size = EXCLUDED.file_size
                 """,
                 name,
                 file_id,
+                _normalize_file_size(file_size),
             )
             return not bool(exists)
 
@@ -331,7 +377,7 @@ class PostgresStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             if extension is None:
@@ -346,6 +392,14 @@ class PostgresStore:
                     f"%{keyword}%",
                     limit + 1,
                     max(0, offset),
+                )
+                stats_row = await conn.fetchrow(
+                    """
+                    SELECT COUNT(1) AS total_count, COALESCE(SUM(file_size), 0) AS total_size
+                    FROM files
+                    WHERE name ILIKE $1
+                    """,
+                    f"%{keyword}%",
                 )
             else:
                 rows = await conn.fetch(
@@ -362,10 +416,27 @@ class PostgresStore:
                     limit + 1,
                     max(0, offset),
                 )
+                stats_row = await conn.fetchrow(
+                    """
+                    SELECT COUNT(1) AS total_count, COALESCE(SUM(file_size), 0) AS total_size
+                    FROM files
+                    WHERE name ILIKE $1
+                      AND LOWER(name) LIKE $2
+                    """,
+                    f"%{keyword}%",
+                    f"%.{extension.lower()}",
+                )
 
         has_next = len(rows) > limit
         visible_rows = rows[:limit]
-        return [(int(row["id"]), str(row["name"])) for row in visible_rows], has_next
+        total_count = int(stats_row["total_count"]) if stats_row is not None else 0
+        total_size = int(stats_row["total_size"]) if stats_row is not None else 0
+        return (
+            [(int(row["id"]), str(row["name"])) for row in visible_rows],
+            has_next,
+            total_count,
+            total_size,
+        )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         pool = await self._get_pool()
@@ -426,11 +497,16 @@ class TursoStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
+                    file_size INTEGER NOT NULL DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+            try:
+                conn.execute("ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
+            except Exception:
+                pass
             conn.commit()
         finally:
             self._safe_close(conn)
@@ -441,7 +517,7 @@ class TursoStore:
     async def close(self) -> None:
         return None
 
-    def _add_or_update_sync(self, name: str, file_id: str) -> bool:
+    def _add_or_update_sync(self, name: str, file_id: str, file_size: int) -> bool:
         conn = self._connect()
         try:
             exists_cursor = conn.execute("SELECT 1 FROM files WHERE file_id = ?", (file_id,))
@@ -449,20 +525,21 @@ class TursoStore:
 
             conn.execute(
                 """
-                INSERT INTO files (name, file_id)
-                VALUES (?, ?)
+                INSERT INTO files (name, file_id, file_size)
+                VALUES (?, ?, ?)
                 ON CONFLICT(file_id) DO UPDATE SET
-                    name = excluded.name
+                    name = excluded.name,
+                    file_size = excluded.file_size
                 """,
-                (name, file_id),
+                (name, file_id, _normalize_file_size(file_size)),
             )
             conn.commit()
             return not exists
         finally:
             self._safe_close(conn)
 
-    async def add_or_update_file(self, name: str, file_id: str) -> bool:
-        return await asyncio.to_thread(self._add_or_update_sync, name, file_id)
+    async def add_or_update_file(self, name: str, file_id: str, file_size: int) -> bool:
+        return await asyncio.to_thread(self._add_or_update_sync, name, file_id, file_size)
 
     def _search_sync(
         self,
@@ -470,30 +547,42 @@ class TursoStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         conn = self._connect()
         try:
-            query = """
-                SELECT id, name
-                FROM files
-                WHERE LOWER(name) LIKE LOWER(?)
-            """
-            params: list[object] = [f"%{keyword}%"]
+            where_clause = "WHERE LOWER(name) LIKE LOWER(?)"
+            where_params: list[object] = [f"%{keyword}%"]
 
             if extension is not None:
-                query += " AND LOWER(name) LIKE ?"
-                params.append(f"%.{extension.lower()}")
+                where_clause += " AND LOWER(name) LIKE ?"
+                where_params.append(f"%.{extension.lower()}")
 
-            query += " ORDER BY id DESC LIMIT ? OFFSET ?"
-            params.extend([limit + 1, max(0, offset)])
+            query = (
+                "SELECT id, name FROM files "
+                f"{where_clause} "
+                "ORDER BY id DESC LIMIT ? OFFSET ?"
+            )
+            query_params = [*where_params, limit + 1, max(0, offset)]
+            rows = conn.execute(query, tuple(query_params)).fetchall()
 
-            rows = conn.execute(query, tuple(params)).fetchall()
+            stats_query = (
+                "SELECT COUNT(1), COALESCE(SUM(file_size), 0) "
+                f"FROM files {where_clause}"
+            )
+            stats_row = conn.execute(stats_query, tuple(where_params)).fetchone()
         finally:
             self._safe_close(conn)
 
         has_next = len(rows) > limit
         visible_rows = rows[:limit]
-        return [(int(row[0]), str(row[1])) for row in visible_rows], has_next
+        total_count = int(stats_row[0]) if stats_row is not None else 0
+        total_size = int(stats_row[1]) if stats_row is not None else 0
+        return (
+            [(int(row[0]), str(row[1])) for row in visible_rows],
+            has_next,
+            total_count,
+            total_size,
+        )
 
     async def search_file(
         self,
@@ -501,7 +590,7 @@ class TursoStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         return await asyncio.to_thread(self._search_sync, keyword, extension, offset, limit)
 
     def _get_file_sync(self, record_id: int) -> Optional[tuple[str, str]]:
@@ -594,14 +683,15 @@ class MongoStore:
         )
         return int(doc["seq"])
 
-    async def add_or_update_file(self, name: str, file_id: str) -> bool:
+    async def add_or_update_file(self, name: str, file_id: str, file_size: int) -> bool:
         extension = _extract_extension(name)
+        normalized_size = _normalize_file_size(file_size)
         existing = await self._files.find_one({"file_id": file_id}, {"_id": 0, "record_id": 1})
 
         if existing is not None:
             await self._files.update_one(
                 {"file_id": file_id},
-                {"$set": {"name": name, "ext": extension}},
+                {"$set": {"name": name, "ext": extension, "file_size": normalized_size}},
             )
             return False
 
@@ -613,6 +703,7 @@ class MongoStore:
                     "name": name,
                     "file_id": file_id,
                     "ext": extension,
+                    "file_size": normalized_size,
                     "created_at": datetime.now(timezone.utc),
                 }
             )
@@ -620,7 +711,7 @@ class MongoStore:
         except self._DuplicateKeyError:
             await self._files.update_one(
                 {"file_id": file_id},
-                {"$set": {"name": name, "ext": extension}},
+                {"$set": {"name": name, "ext": extension, "file_size": normalized_size}},
             )
             return False
 
@@ -630,7 +721,7 @@ class MongoStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool]:
+    ) -> tuple[list[tuple[int, str]], bool, int, int]:
         query: dict[str, object] = {
             "name": {"$regex": re.escape(keyword), "$options": "i"}
         }
@@ -644,14 +735,29 @@ class MongoStore:
             .limit(limit + 1)
         )
         rows = await cursor.to_list(length=limit + 1)
+        total_count = int(await self._files.count_documents(query))
+
+        total_size = 0
+        pipeline = [
+            {"$match": query},
+            {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$file_size", 0]}}}},
+        ]
+        stats = await self._files.aggregate(pipeline).to_list(length=1)
+        if stats:
+            total_size = int(stats[0].get("total", 0))
 
         has_next = len(rows) > limit
         visible_rows = rows[:limit]
-        return [
-            (int(row["record_id"]), str(row["name"]))
-            for row in visible_rows
-            if "record_id" in row and "name" in row
-        ], has_next
+        return (
+            [
+                (int(row["record_id"]), str(row["name"]))
+                for row in visible_rows
+                if "record_id" in row and "name" in row
+            ],
+            has_next,
+            total_count,
+            total_size,
+        )
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         row = await self._files.find_one(
@@ -743,8 +849,12 @@ async def close_db() -> None:
     await file_store.close()
 
 
-async def add_or_update_file(name: str, file_id: str) -> bool:
-    return await file_store.add_or_update_file(name=name, file_id=file_id)
+async def add_or_update_file(name: str, file_id: str, file_size: int) -> bool:
+    return await file_store.add_or_update_file(
+        name=name,
+        file_id=file_id,
+        file_size=_normalize_file_size(file_size),
+    )
 
 
 async def search_file(
@@ -752,7 +862,7 @@ async def search_file(
     extension: Optional[str] = None,
     offset: int = 0,
     limit: int = SEARCH_LIMIT,
-) -> tuple[list[tuple[int, str]], bool]:
+) -> tuple[list[tuple[int, str]], bool, int, int]:
     return await file_store.search_file(
         keyword=keyword,
         extension=extension,
@@ -842,7 +952,7 @@ async def _build_search_view(
     safe_offset = max(0, offset)
     extension = _filter_to_extension(safe_filter)
 
-    results, has_next = await search_file(
+    results, has_next, total_count, total_size = await search_file(
         keyword=keyword,
         extension=extension,
         offset=safe_offset,
@@ -851,7 +961,7 @@ async def _build_search_view(
 
     if not results and safe_offset > 0:
         safe_offset = max(0, safe_offset - SEARCH_LIMIT)
-        results, has_next = await search_file(
+        results, has_next, total_count, total_size = await search_file(
             keyword=keyword,
             extension=extension,
             offset=safe_offset,
@@ -859,19 +969,17 @@ async def _build_search_view(
         )
 
     filter_label = FILTER_LABELS[safe_filter]
+    total_pages = max(1, (total_count + SEARCH_LIMIT - 1) // SEARCH_LIMIT)
+    page_number = min(total_pages, safe_offset // SEARCH_LIMIT + 1)
+    summary_line = (
+        f"类型: {filter_label} | 第 {page_number}/{total_pages} 页\n"
+        f"总文件: {total_count} | 总容量: {_format_size(total_size)} | 本页: {len(results)}"
+    )
+
     if results:
-        page_number = safe_offset // SEARCH_LIMIT + 1
-        text = (
-            "搜索结果\n"
-            f"关键词: {keyword}\n"
-            f"类型: {filter_label} | 第 {page_number} 页 | 本页 {len(results)} 条"
-        )
+        text = f"搜索结果\n关键词: {keyword}\n{summary_line}"
     else:
-        text = (
-            "没找到相关文件\n"
-            f"关键词: {keyword}\n"
-            f"类型: {filter_label}"
-        )
+        text = f"没找到相关文件\n关键词: {keyword}\n{summary_line}"
 
     keyboard = _build_search_keyboard(
         results=results,
@@ -895,7 +1003,7 @@ async def help_command(msg: types.Message) -> None:
         "使用说明:",
         "1) 发送文件可自动收录",
         "2) 发送关键词可搜索文件",
-        "3) 搜索结果支持分页浏览",
+        "3) 搜索结果支持分页，并显示总文件数与总容量",
         "4) 支持常用文件类型筛选（文档/视频/音频/图片/压缩包）",
         "5) 点击结果按钮可回传文件",
     ]
@@ -943,7 +1051,11 @@ async def save_file(msg: types.Message) -> None:
         await msg.answer("文件信息不完整，无法收录。")
         return
 
-    is_new = await add_or_update_file(msg.document.file_name, msg.document.file_id)
+    is_new = await add_or_update_file(
+        msg.document.file_name,
+        msg.document.file_id,
+        _normalize_file_size(msg.document.file_size),
+    )
 
     if msg.chat.type == "private":
         if is_new:

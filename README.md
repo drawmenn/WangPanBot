@@ -6,6 +6,7 @@
 
 - 发送文件自动收录到数据库
 - 关键词搜索文件名（支持分页）
+- 分页结果显示：当前页/总页数、总文件数、总容量
 - 文件类型筛选（支持常用文档/视频/音频/图片/压缩包）
 - 点击按钮回传文件
 - 管理员删除文件（按钮删除或 `/delete 文件ID`）
@@ -24,39 +25,38 @@ pip install -r requirements.txt
 
 ## 配置
 
-先复制 `.env.example`，按需填写变量。
+可以按下面 4 步来配，照着填就行。
 
-通用变量：
+1. 先复制配置文件  
+把 `.env.example` 复制为 `.env`，后续都改 `.env`。
 
-- `BOT_TOKEN` 必填，Telegram Bot Token
-- `ADMIN_ID` 可选，设置后仅管理员可在私聊上传/删除
-- `SEARCH_LIMIT` 可选，单页搜索条数，默认 `5`
-- `SEARCH_SESSION_TTL_SECONDS` 可选，分页会话过期时间（秒），默认 `1800`
-- `DB_PROVIDER` 必填，数据库类型：`sqlite | supabase | mongodb | turso | neon`
+2. 先填两个“必须项”  
+- `BOT_TOKEN`：你的 Telegram 机器人 Token  
+- `DB_PROVIDER`：你要用哪种数据库  
+可选值：`sqlite | supabase | mongodb | turso | neon`
 
-数据库变量（只需要填你选择的那一组）：
+3. 数据库只填一组  
+你选了哪个 `DB_PROVIDER`，就只填那一组变量，其他可以留空。
 
-- `sqlite`
-: `DB_PATH`（默认 `data.db`）
-- `supabase`
-: `SUPABASE_DATABASE_URL`（推荐）或 `SUPABASE_DB_URL`，也可用 `DATABASE_URL` 兜底
-- `neon`
-: `NEON_DATABASE_URL`，也可用 `DATABASE_URL` 兜底
-- `mongodb`
-: `MONGODB_URI`（必填），可选 `MONGODB_DB_NAME`、`MONGODB_COLLECTION_NAME`
-- `turso`
-: `TURSO_DATABASE_URL`（必填），`TURSO_AUTH_TOKEN`（云库通常必填），可选 `TURSO_LOCAL_PATH`（embedded replica 本地文件）
+- 选 `sqlite`：填 `DB_PATH`（默认 `data.db`）  
+- 选 `supabase`：填 `SUPABASE_DATABASE_URL`（或 `SUPABASE_DB_URL` / `DATABASE_URL`）  
+- 选 `neon`：填 `NEON_DATABASE_URL`（或 `DATABASE_URL`）  
+- 选 `mongodb`：填 `MONGODB_URI`（可再填 `MONGODB_DB_NAME`、`MONGODB_COLLECTION_NAME`）  
+- 选 `turso`：填 `TURSO_DATABASE_URL`、`TURSO_AUTH_TOKEN`（可选 `TURSO_LOCAL_PATH`）
 
-Postgres 连接池（`supabase`/`neon`）：
+4. 按运行方式补充  
+- 用 `bot.py`（轮询模式）：不用填 webhook 变量  
+- 用 `app.py`（webhook 模式）：填下面任意一组  
+  `WEBHOOK_URL`  
+  或 `WEBHOOK_BASE_URL` + `WEBHOOK_PATH`  
+  在 Render 上可以不填域名，平台会自动给 `RENDER_EXTERNAL_URL`
 
-- `POSTGRES_POOL_SIZE` 可选，默认 `5`
+常用可选项：
 
-Webhook 变量（仅 `app.py` 模式）：
-
-- `WEBHOOK_PATH` 默认 `/webhook`
-- `WEBHOOK_URL` 完整地址，优先级最高
-- 或 `WEBHOOK_BASE_URL` + `WEBHOOK_PATH`
-- Render 可不填域名，自动使用 `RENDER_EXTERNAL_URL`
+- `ADMIN_ID`：填你的 Telegram 数字 ID，开启管理员权限（私聊上传/删除限制）  
+- `SEARCH_LIMIT`：每页显示多少条，默认 `5`  
+- `SEARCH_SESSION_TTL_SECONDS`：分页会话多久过期（秒），默认 `1800`  
+- `POSTGRES_POOL_SIZE`：Postgres 连接池大小，默认 `5`（仅 Supabase/Neon 用到）
 
 ## 配置模板
 
