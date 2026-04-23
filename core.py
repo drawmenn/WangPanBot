@@ -1187,13 +1187,13 @@ async def myfiles_command(msg: types.Message) -> None:
     await _send_recent_view(msg, filter_key="all", page=1)
 
 
-@dp.message(F.text)
+@dp.message(F.text.in_(set(TEXT_COMMAND_ALIASES.keys())))
 async def chinese_alias_command(msg: types.Message) -> None:
     if msg.text is None:
         return
 
     alias_text = msg.text.strip()
-    if not alias_text or alias_text.startswith("/"):
+    if not alias_text:
         return
 
     alias_target = TEXT_COMMAND_ALIASES.get(alias_text)
