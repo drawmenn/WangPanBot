@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from aiogram import types
+from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -300,6 +301,19 @@ async def api_download_file(record_id: int) -> StreamingResponse:
     file_id, filename = file_data
     try:
         telegram_file = await bot.get_file(file_id)
+    except TelegramBadRequest as exc:
+        message = str(exc).lower()
+        if "file is too big" in message:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "文件超过 Telegram Bot API 直连下载限制（20MB）。"
+                    "请在 Telegram 中使用 /get 文件ID 获取，"
+                    "或改用本地 Bot API Server。"
+                ),
+            ) from exc
+        logger.exception("Failed to get telegram file metadata: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to fetch file metadata.") from exc
     except Exception as exc:
         logger.exception("Failed to get telegram file metadata: %s", exc)
         raise HTTPException(status_code=502, detail="Failed to fetch file metadata.") from exc
@@ -310,6 +324,19 @@ async def api_download_file(record_id: int) -> StreamingResponse:
     buffer = io.BytesIO()
     try:
         await bot.download_file(telegram_file.file_path, destination=buffer)
+    except TelegramBadRequest as exc:
+        message = str(exc).lower()
+        if "file is too big" in message:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    "文件超过 Telegram Bot API 直连下载限制（20MB）。"
+                    "请在 Telegram 中使用 /get 文件ID 获取，"
+                    "或改用本地 Bot API Server。"
+                ),
+            ) from exc
+        logger.exception("Failed to download telegram file content: %s", exc)
+        raise HTTPException(status_code=502, detail="Failed to download file content.") from exc
     except Exception as exc:
         logger.exception("Failed to download telegram file content: %s", exc)
         raise HTTPException(status_code=502, detail="Failed to download file content.") from exc

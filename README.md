@@ -223,6 +223,7 @@ GET /
 
 - 未配置 `WEB_ADMIN_TOKEN` 时，网页仍可查看与搜索，但删除按钮不可用
 - 网页上传需要配置 `WEB_UPLOAD_CHAT_ID` 或 `ADMIN_ID`
+- 网页直连下载受 Telegram Bot API 限制：单文件超过 20MB 可能失败，建议在 Telegram 使用 `/get 文件ID`
 - 网页端是管理辅助，不影响 Telegram 机器人命令
 
 ## Render 免费部署
