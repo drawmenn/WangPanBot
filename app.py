@@ -239,6 +239,9 @@ async def api_files(
             "is_web_admin": _is_web_admin(request),
             "delete_enabled": bool(WEB_ADMIN_TOKEN),
             "upload_enabled": _resolve_upload_chat_id() is not None,
+            "upload_requires_admin": bool(WEB_ADMIN_TOKEN),
+            "can_upload": _resolve_upload_chat_id() is not None
+            and (not WEB_ADMIN_TOKEN or _is_web_admin(request)),
         },
     }
 
@@ -249,7 +252,8 @@ async def api_upload(
     file: UploadFile = File(...),
 ) -> dict[str, object]:
     _check_web_enabled()
-    _require_web_admin(request)
+    if WEB_ADMIN_TOKEN:
+        _require_web_admin(request)
 
     upload_chat_id = _resolve_upload_chat_id()
     if upload_chat_id is None:

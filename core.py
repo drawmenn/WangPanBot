@@ -1306,15 +1306,6 @@ async def delete_by_command(msg: types.Message, command: CommandObject) -> None:
 
 @dp.message(F.document)
 async def save_file(msg: types.Message) -> None:
-    if (
-        msg.chat.type == "private"
-        and ADMIN_ID is not None
-        and msg.from_user is not None
-        and msg.from_user.id != ADMIN_ID
-    ):
-        await msg.answer("当前仅允许管理员在私聊上传文件。")
-        return
-
     if not msg.document.file_id or not msg.document.file_name:
         await msg.answer("文件信息不完整，无法收录。")
         return

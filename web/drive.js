@@ -10,6 +10,8 @@ const state = {
     is_web_admin: false,
     delete_enabled: false,
     upload_enabled: false,
+    upload_requires_admin: false,
+    can_upload: false,
   },
 };
 
@@ -139,7 +141,11 @@ function renderTable(items, permissions) {
 }
 
 function syncUploadStatus() {
-  const canUpload = state.permissions.is_web_admin && state.permissions.upload_enabled;
+  const canUpload =
+    (state.permissions.can_upload ??
+      (state.permissions.upload_enabled &&
+        (!state.permissions.upload_requires_admin ||
+          state.permissions.is_web_admin))) === true;
   refs.uploadBtn.disabled = !canUpload;
 
   if (!state.permissions.upload_enabled) {
@@ -147,7 +153,7 @@ function syncUploadStatus() {
       "服务端未配置 WEB_UPLOAD_CHAT_ID 或 ADMIN_ID，当前无法网页上传。";
     return;
   }
-  if (!state.permissions.is_web_admin) {
+  if (state.permissions.upload_requires_admin && !state.permissions.is_web_admin) {
     refs.uploadHint.textContent = "请先填写管理员令牌，才可网页上传。";
     return;
   }
