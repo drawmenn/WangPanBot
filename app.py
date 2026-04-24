@@ -36,6 +36,15 @@ WEBHOOK_ENABLED = os.getenv("WEBHOOK_ENABLED", "1").strip().lower() not in {
     "no",
     "off",
 }
+WEBHOOK_DELETE_ON_SHUTDOWN = os.getenv(
+    "WEBHOOK_DELETE_ON_SHUTDOWN",
+    "0",
+).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 WEB_UI_ENABLED = os.getenv("WEB_UI_ENABLED", "1").strip().lower() not in {
     "0",
     "false",
@@ -418,8 +427,11 @@ async def on_startup() -> None:
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
-    if WEBHOOK_ENABLED:
+    if WEBHOOK_ENABLED and WEBHOOK_DELETE_ON_SHUTDOWN:
         await bot.delete_webhook()
+        logger.info("Webhook has been deleted on shutdown.")
+    elif WEBHOOK_ENABLED:
+        logger.info("Keep webhook on shutdown.")
     await mtproto_streamer.stop()
     await close_db()
     await bot.session.close()

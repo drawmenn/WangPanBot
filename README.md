@@ -80,6 +80,7 @@ pip install -r requirements.txt
 - `ADMIN_ID`：填你的 Telegram 数字 ID，开启管理员权限（私聊上传/删除限制）  
 - `SEARCH_LIMIT`：每页显示多少条，默认 `5`  
 - `SEARCH_SESSION_TTL_SECONDS`：分页会话多久过期（秒），默认 `1800`  
+- `WEBHOOK_DELETE_ON_SHUTDOWN`：停机时是否删除 Telegram webhook，Render 免费实例建议保持 `0`
 - `POSTGRES_POOL_SIZE`：Postgres 连接池大小，默认 `5`（仅 Supabase/Neon 用到）
 - `WEB_UI_ENABLED`：是否启用网页端，默认 `1`（开启）
 - `WEB_ADMIN_TOKEN`：网页管理删除令牌（可选，不填则网页端为只读）
@@ -240,6 +241,7 @@ GET /
 注意：
 
 - Render 免费 Web Service 会在 15 分钟无流量后休眠
+- `WEBHOOK_ENABLED` 保持 `1`，`WEBHOOK_DELETE_ON_SHUTDOWN` 保持 `0`，避免休眠时把 Telegram webhook 删除
 - 如果 `DB_PROVIDER=sqlite`，免费实例文件系统是临时的，`data.db` 在重启/重新部署后会丢失
 - 生产场景建议改用 Postgres 持久化数据
 
@@ -333,6 +335,7 @@ MTPROTO_CHUNK_SIZE=1048576
 主站（Kuberns）：
 ```env
 WEBHOOK_ENABLED=1
+WEBHOOK_DELETE_ON_SHUTDOWN=0
 WEBHOOK_BASE_URL=https://your-kuberns-domain
 WEBHOOK_PATH=/webhook
 ```

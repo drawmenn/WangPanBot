@@ -33,6 +33,8 @@ projects:
         sync: false
       - key: ADMIN_ID
         sync: false
+      - key: WEBHOOK_DELETE_ON_SHUTDOWN
+        sync: false
       - key: WEBHOOK_ENABLED
         sync: false
       - key: MTPROTO_DOWNLOAD_ENABLED
