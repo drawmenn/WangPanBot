@@ -960,6 +960,7 @@ def _build_search_keyboard(
     offset: int,
     has_next: bool,
     can_delete: bool,
+    filters_expanded: bool = False,
 ) -> InlineKeyboardMarkup:
     keyboard_rows: list[list[InlineKeyboardButton]] = []
 
@@ -979,18 +980,42 @@ def _build_search_keyboard(
         else:
             keyboard_rows.append([file_button])
 
-    filter_buttons: list[InlineKeyboardButton] = []
-    for current_filter_key, filter_label in FILTER_LABELS.items():
-        button_label = f"[{filter_label}]" if current_filter_key == filter_key else filter_label
-        filter_buttons.append(
-            InlineKeyboardButton(
-                text=button_label,
-                callback_data=f"s:{token}:{current_filter_key}:0",
+    filter_label = FILTER_LABELS[filter_key]
+    if filters_expanded:
+        filter_buttons: list[InlineKeyboardButton] = []
+        for current_filter_key, current_filter_label in FILTER_LABELS.items():
+            button_label = (
+                f"[{current_filter_label}]"
+                if current_filter_key == filter_key
+                else current_filter_label
             )
-        )
+            filter_buttons.append(
+                InlineKeyboardButton(
+                    text=button_label,
+                    callback_data=f"s:{token}:{current_filter_key}:0",
+                )
+            )
 
-    for index in range(0, len(filter_buttons), FILTERS_PER_ROW):
-        keyboard_rows.append(filter_buttons[index : index + FILTERS_PER_ROW])
+        for index in range(0, len(filter_buttons), FILTERS_PER_ROW):
+            keyboard_rows.append(filter_buttons[index : index + FILTERS_PER_ROW])
+
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"收起类型筛选（当前：{filter_label}）",
+                    callback_data=f"sf:{token}:{filter_key}:{offset}:0",
+                )
+            ]
+        )
+    else:
+        keyboard_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"筛选：{filter_label} / 展开类型",
+                    callback_data=f"sf:{token}:{filter_key}:{offset}:1",
+                )
+            ]
+        )
 
     nav_row: list[InlineKeyboardButton] = []
     if offset > 0:
@@ -1021,6 +1046,7 @@ async def _build_search_view(
     filter_key: str,
     offset: int,
     can_delete: bool,
+    filters_expanded: bool = False,
 ) -> tuple[str, InlineKeyboardMarkup]:
     safe_filter = _normalize_filter(filter_key)
     safe_offset = max(0, offset)
@@ -1066,6 +1092,7 @@ async def _build_search_view(
         offset=safe_offset,
         has_next=has_next,
         can_delete=can_delete,
+        filters_expanded=filters_expanded,
     )
     return text, keyboard
 
@@ -1380,6 +1407,52 @@ async def paginate_search(call: types.CallbackQuery) -> None:
         filter_key=filter_key,
         offset=offset,
         can_delete=can_delete,
+    )
+
+    try:
+        await call.message.edit_text(text, reply_markup=keyboard)
+    except TelegramBadRequest as exc:
+        if "message is not modified" not in str(exc):
+            raise
+
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("sf:"))
+async def toggle_search_filters(call: types.CallbackQuery) -> None:
+    if call.data is None:
+        return
+
+    if call.message is None:
+        await call.answer("当前上下文不可用", show_alert=True)
+        return
+
+    parts = call.data.split(":", maxsplit=4)
+    if len(parts) != 5:
+        await call.answer("无效请求", show_alert=True)
+        return
+
+    _, token, filter_key, offset_raw, expanded_raw = parts
+    keyword = _get_search_keyword(token)
+    if keyword is None:
+        await call.answer("搜索会话已过期，请重新输入关键词。", show_alert=True)
+        return
+
+    try:
+        offset = max(0, int(offset_raw))
+    except ValueError:
+        await call.answer("无效页码", show_alert=True)
+        return
+
+    filters_expanded = expanded_raw == "1"
+    can_delete = _is_admin_user(call.from_user)
+    text, keyboard = await _build_search_view(
+        keyword=keyword,
+        token=token,
+        filter_key=filter_key,
+        offset=offset,
+        can_delete=can_delete,
+        filters_expanded=filters_expanded,
     )
 
     try:
