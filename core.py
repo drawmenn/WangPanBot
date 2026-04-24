@@ -48,6 +48,7 @@ SEARCH_LIMIT = max(1, min(20, _parse_int("SEARCH_LIMIT", 5)))
 SEARCH_SESSION_TTL_SECONDS = max(300, _parse_int("SEARCH_SESSION_TTL_SECONDS", 1800))
 POSTGRES_POOL_SIZE = max(1, min(20, _parse_int("POSTGRES_POOL_SIZE", 5)))
 ADMIN_ID = _parse_optional_int("ADMIN_ID")
+WEB_UPLOAD_CHAT_ID = _parse_optional_int("WEB_UPLOAD_CHAT_ID")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -953,6 +954,58 @@ async def delete_file_record(record_id: int) -> bool:
     return await file_store.delete_file_record(record_id=record_id)
 
 
+def _private_archive_caption(msg: types.Message) -> str:
+    if msg.from_user is None:
+        return f"Private upload from chat {msg.chat.id}"
+
+    if msg.from_user.username:
+        sender = f"@{msg.from_user.username} ({msg.from_user.id})"
+    else:
+        sender = str(msg.from_user.id)
+    return f"Private upload from {sender}"
+
+
+async def _archive_private_document(
+    msg: types.Message,
+) -> tuple[str, int, str]:
+    if msg.document is None or not msg.document.file_id:
+        return "", 0, "skipped"
+
+    file_id = msg.document.file_id
+    file_size = _normalize_file_size(msg.document.file_size)
+    if (
+        msg.chat.type != "private"
+        or WEB_UPLOAD_CHAT_ID is None
+        or msg.chat.id == WEB_UPLOAD_CHAT_ID
+    ):
+        return file_id, file_size, "skipped"
+
+    try:
+        sent_message = await bot.send_document(
+            chat_id=WEB_UPLOAD_CHAT_ID,
+            document=file_id,
+            caption=_private_archive_caption(msg),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to archive private document to WEB_UPLOAD_CHAT_ID=%s",
+            WEB_UPLOAD_CHAT_ID,
+        )
+        return file_id, file_size, "failed"
+
+    if sent_message.document is None or not sent_message.document.file_id:
+        logger.warning(
+            "Telegram archive message did not include a document file_id."
+        )
+        return file_id, file_size, "failed"
+
+    return (
+        sent_message.document.file_id,
+        _normalize_file_size(sent_message.document.file_size or file_size),
+        "archived",
+    )
+
+
 def _build_search_keyboard(
     results: list[tuple[int, str]],
     token: str,
@@ -1337,17 +1390,27 @@ async def save_file(msg: types.Message) -> None:
         await msg.answer("文件信息不完整，无法收录。")
         return
 
+    file_id = msg.document.file_id
+    file_size = _normalize_file_size(msg.document.file_size)
+    archive_status = "skipped"
+    if msg.chat.type == "private":
+        file_id, file_size, archive_status = await _archive_private_document(msg)
+
     is_new = await add_or_update_file(
         msg.document.file_name,
-        msg.document.file_id,
-        _normalize_file_size(msg.document.file_size),
+        file_id,
+        file_size,
     )
 
     if msg.chat.type == "private":
-        if is_new:
-            await msg.answer(f"已收录: {msg.document.file_name}")
-        else:
-            await msg.answer(f"已更新: {msg.document.file_name}")
+        action = "已收录" if is_new else "已更新"
+        suffix = ""
+        if archive_status == "archived":
+            suffix = "\n已归档到 WEB_UPLOAD_CHAT_ID。"
+        elif archive_status == "failed":
+            suffix = "\n归档到 WEB_UPLOAD_CHAT_ID 失败，已保留原文件引用。"
+
+        await msg.answer(f"{action}: {msg.document.file_name}{suffix}")
 
 
 @dp.message(F.text)

@@ -84,7 +84,7 @@ pip install -r requirements.txt
 - `POSTGRES_POOL_SIZE`：Postgres 连接池大小，默认 `5`（仅 Supabase/Neon 用到）
 - `WEB_UI_ENABLED`：是否启用网页端，默认 `1`（开启）
 - `WEB_ADMIN_TOKEN`：网页管理删除令牌（可选，不填则网页端为只读）
-- `WEB_UPLOAD_CHAT_ID`：网页上传目标聊天 ID（可选，没填时回退到 `ADMIN_ID`）
+- `WEB_UPLOAD_CHAT_ID`：存储聊天 ID；网页上传会发到这里，私聊发给机器人的文件也会归档到这里（网页上传没填时回退到 `ADMIN_ID`）
 
 `ADMIN_ID` 速查模板：
 
@@ -224,6 +224,7 @@ GET /
 
 - 未配置 `WEB_ADMIN_TOKEN` 时，网页仍可查看与搜索，但删除按钮不可用
 - 网页上传需要配置 `WEB_UPLOAD_CHAT_ID` 或 `ADMIN_ID`
+- 私聊发给机器人的文件会在配置 `WEB_UPLOAD_CHAT_ID` 时同步归档到该聊天
 - 网页直连下载受 Telegram Bot API 限制：单文件超过 20MB 可能失败，建议在 Telegram 使用 `/get 文件ID`
 - 网页端是管理辅助，不影响 Telegram 机器人命令
 
