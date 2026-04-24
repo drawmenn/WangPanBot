@@ -1,16 +1,51 @@
-services:
-  - type: web
-    name: wangpanbot
-    runtime: python
-    plan: free
-    autoDeployTrigger: commit
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app:app --host 0.0.0.0 --port 10000
-    healthCheckPath: /healthz
-    envVars:
-      - key: BOT_TOKEN
+# Exported from Render on 2026-04-24T04:55:45Z
+version: "1"
+projects:
+- name: My project
+  environments:
+  - name: Production
+    services:
+    - type: web
+      name: WangPanBot
+      runtime: docker
+      repo: https://github.com/drawmenn/WangPanBot
+      plan: free
+      envVars:
+      - key: MTPROTO_WORKDIR
+        sync: false
+      - key: MTPROTO_CHUNK_SIZE
+        sync: false
+      - key: SEARCH_SESSION_TTL_SECONDS
+        sync: false
+      - key: WEBHOOK_PATH
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
+      - key: WEB_UPLOAD_CHAT_ID
+        sync: false
+      - key: WEB_UI_ENABLED
+        sync: false
+      - key: TURSO_DATABASE_URL
+        sync: false
+      - key: TURSO_AUTH_TOKEN
         sync: false
       - key: SEARCH_LIMIT
-        value: "5"
-      - key: WEBHOOK_PATH
-        value: /webhook
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: WEBHOOK_ENABLED
+        sync: false
+      - key: MTPROTO_DOWNLOAD_ENABLED
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: DB_PROVIDER
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      region: singapore
+      dockerContext: .
+      dockerfilePath: ./Dockerfile
+      autoDeployTrigger: commit
