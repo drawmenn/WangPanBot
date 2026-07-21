@@ -954,15 +954,70 @@ async def delete_file_record(record_id: int) -> bool:
     return await file_store.delete_file_record(record_id=record_id)
 
 
-def _private_archive_caption(msg: types.Message) -> str:
+# Telegram caption hard limit is 1024 UTF-16 code units.
+CAPTION_MAX_LENGTH = 1024
+
+
+def _utf16_len(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _truncate_utf16(text: str, max_units: int) -> str:
+    if max_units <= 0:
+        return ""
+    encoded = text.encode("utf-16-le")[: max_units * 2]
+    try:
+        return encoded.decode("utf-16-le")
+    except UnicodeDecodeError:
+        # Avoid splitting a surrogate pair (e.g. an emoji) in half.
+        return encoded[:-2].decode("utf-16-le")
+
+
+def _archive_caption_header(msg: types.Message) -> str:
     if msg.from_user is None:
         return f"Private upload from chat {msg.chat.id}"
-
     if msg.from_user.username:
-        sender = f"@{msg.from_user.username} ({msg.from_user.id})"
-    else:
-        sender = str(msg.from_user.id)
-    return f"Private upload from {sender}"
+        return f"Private upload from @{msg.from_user.username} ({msg.from_user.id})"
+    return f"Private upload from {msg.from_user.id}"
+
+
+def _private_archive_caption(
+    msg: types.Message,
+) -> tuple[str, Optional[list[types.MessageEntity]]]:
+    header = _archive_caption_header(msg)
+    original = msg.caption or ""
+    entities = msg.caption_entities or []
+
+    if not original.strip():
+        return header[:CAPTION_MAX_LENGTH], None
+
+    prefix = f"{header}\n\n"
+    delta = _utf16_len(prefix)
+    shifted = [e.model_copy(update={"offset": e.offset + delta}) for e in entities]
+
+    if delta + _utf16_len(original) <= CAPTION_MAX_LENGTH:
+        return prefix + original, (shifted or None)
+
+    # Too long: keep the header intact, truncate the original text and mark it.
+    ellipsis = "…"
+    budget = CAPTION_MAX_LENGTH - delta - _utf16_len(ellipsis)
+    if budget <= 0:
+        return prefix[:CAPTION_MAX_LENGTH], None
+
+    truncated = _truncate_utf16(original, budget)
+    kept_units = _utf16_len(truncated)
+    limit = delta + kept_units
+
+    clipped: list[types.MessageEntity] = []
+    for entity in shifted:
+        if entity.offset >= limit:
+            continue
+        new_length = min(entity.length, limit - entity.offset)
+        if new_length <= 0:
+            continue
+        clipped.append(entity.model_copy(update={"length": new_length}))
+
+    return prefix + truncated + ellipsis, (clipped or None)
 
 
 async def _archive_private_document(
@@ -980,11 +1035,13 @@ async def _archive_private_document(
     ):
         return file_id, file_size, "skipped"
 
+    caption, caption_entities = _private_archive_caption(msg)
     try:
         sent_message = await bot.send_document(
             chat_id=WEB_UPLOAD_CHAT_ID,
             document=file_id,
-            caption=_private_archive_caption(msg),
+            caption=caption,
+            caption_entities=caption_entities,
         )
     except Exception:
         logger.exception(
