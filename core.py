@@ -374,8 +374,8 @@ class SQLiteStore:
             where_params: list[object] = [f"%{keyword}%"]
 
             if extension is not None:
-                where_clause += " AND LOWER(name) LIKE ?"
-                where_params.append(f"%.{extension.lower()}")
+                where_clause += " AND ext = ?"
+                where_params.append(extension.lower())
 
             query = (
                 "SELECT id, name, file_size, created_at FROM files "
@@ -569,12 +569,12 @@ class PostgresStore:
                     SELECT id, name, file_size, created_at
                     FROM files
                     WHERE name ILIKE $1
-                      AND LOWER(name) LIKE $2
+                      AND ext = $2
                     ORDER BY {order_by}
                     LIMIT $3 OFFSET $4
                     """,
                     f"%{keyword}%",
-                    f"%.{extension.lower()}",
+                    extension.lower(),
                     limit + 1,
                     max(0, offset),
                 )
@@ -583,10 +583,10 @@ class PostgresStore:
                     SELECT COUNT(1) AS total_count, COALESCE(SUM(file_size), 0) AS total_size
                     FROM files
                     WHERE name ILIKE $1
-                      AND LOWER(name) LIKE $2
+                      AND ext = $2
                     """,
                     f"%{keyword}%",
-                    f"%.{extension.lower()}",
+                    extension.lower(),
                 )
 
         has_next = len(rows) > limit
@@ -758,8 +758,8 @@ class TursoStore:
             where_params: list[object] = [f"%{keyword}%"]
 
             if extension is not None:
-                where_clause += " AND LOWER(name) LIKE ?"
-                where_params.append(f"%.{extension.lower()}")
+                where_clause += " AND ext = ?"
+                where_params.append(extension.lower())
 
             query = (
                 "SELECT id, name, file_size, created_at FROM files "

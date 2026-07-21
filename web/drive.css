@@ -93,7 +93,7 @@ body {
 
 .search-row {
   display: grid;
-  grid-template-columns: 1fr 170px 100px 110px;
+  grid-template-columns: 1fr 170px 190px 100px 110px;
   gap: 10px;
 }
 

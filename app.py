@@ -9,7 +9,7 @@ from urllib.parse import quote
 from aiogram import types
 from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import (
@@ -184,13 +184,25 @@ async def webhook(req: Request):
         return JSONResponse(status_code=400, content={"ok": False})
 
 
+def _asset_version(filename: str) -> str:
+    # Cache-bust static assets by their mtime so browsers reload after a deploy
+    # instead of serving a stale drive.js/drive.css.
+    try:
+        return str(int((WEB_DIR / filename).stat().st_mtime))
+    except OSError:
+        return "0"
+
+
 @app.get("/drive")
-async def drive_page() -> FileResponse:
+async def drive_page() -> HTMLResponse:
     _check_web_enabled()
     drive_path = WEB_DIR / "drive.html"
     if not drive_path.exists():
         raise HTTPException(status_code=404, detail="drive.html not found.")
-    return FileResponse(drive_path)
+    html = drive_path.read_text(encoding="utf-8")
+    html = html.replace("/web/drive.css", f"/web/drive.css?v={_asset_version('drive.css')}")
+    html = html.replace("/web/drive.js", f"/web/drive.js?v={_asset_version('drive.js')}")
+    return HTMLResponse(html)
 
 
 @app.get("/api/filters")
@@ -205,9 +217,11 @@ async def api_filters() -> dict[str, object]:
         filters.append({"key": key, "label": label, "count": count})
 
     # Append any extension seen in storage that is not a preset filter.
+    # Only surface extensions that survive _normalize_filter, otherwise the
+    # option would silently fall back to "all" when selected.
     known = set(FILTER_LABELS.keys())
     for ext in sorted(counts.keys()):
-        if ext in known:
+        if ext in known or not _EXTENSION_PATTERN.match(ext):
             continue
         filters.append(
             {"key": ext, "label": ext.upper(), "count": int(counts[ext])}
