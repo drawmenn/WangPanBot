@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import secrets
 import io
 from pathlib import Path
@@ -13,7 +14,9 @@ from fastapi.staticfiles import StaticFiles
 
 from core import (
     ADMIN_ID,
+    DEFAULT_SORT,
     FILTER_LABELS,
+    SORT_LABELS,
     add_or_update_file,
     bot,
     close_db,
@@ -21,6 +24,8 @@ from core import (
     dp,
     get_file_detail,
     init_db,
+    list_extension_counts,
+    normalize_sort,
     register_bot_commands,
     search_file,
 )
@@ -82,11 +87,24 @@ if WEB_UI_ENABLED and WEB_DIR.exists():
     app.mount("/web", StaticFiles(directory=str(WEB_DIR)), name="web")
 
 
+_EXTENSION_PATTERN = re.compile(r"^[a-z0-9]{1,16}$")
+
+
 def _normalize_filter(filter_key: str) -> str:
     normalized = filter_key.strip().lower()
     if normalized in FILTER_LABELS:
         return normalized
+    # Accept dynamic extensions (e.g. "apk") that are not in the preset list
+    # but may exist in storage and be surfaced by /api/filters.
+    if _EXTENSION_PATTERN.match(normalized):
+        return normalized
     return "all"
+
+
+def _filter_label(filter_key: str) -> str:
+    if filter_key in FILTER_LABELS:
+        return FILTER_LABELS[filter_key]
+    return filter_key.upper()
 
 
 def _extract_token(request: Request) -> str:
@@ -178,11 +196,25 @@ async def drive_page() -> FileResponse:
 @app.get("/api/filters")
 async def api_filters() -> dict[str, object]:
     _check_web_enabled()
-    filters = [
-        {"key": key, "label": label}
-        for key, label in FILTER_LABELS.items()
-    ]
-    return {"ok": True, "filters": filters}
+    counts = await list_extension_counts()
+
+    filters: list[dict[str, object]] = []
+    for key, label in FILTER_LABELS.items():
+        # "all" has no ext count; other presets show their live count.
+        count = None if key == "all" else int(counts.get(key, 0))
+        filters.append({"key": key, "label": label, "count": count})
+
+    # Append any extension seen in storage that is not a preset filter.
+    known = set(FILTER_LABELS.keys())
+    for ext in sorted(counts.keys()):
+        if ext in known:
+            continue
+        filters.append(
+            {"key": ext, "label": ext.upper(), "count": int(counts[ext])}
+        )
+
+    sorts = [{"key": key, "label": label} for key, label in SORT_LABELS.items()]
+    return {"ok": True, "filters": filters, "sorts": sorts, "default_sort": DEFAULT_SORT}
 
 
 @app.get("/api/files")
@@ -192,12 +224,14 @@ async def api_files(
     type: str = Query("all"),  # noqa: A002
     page: int = 1,
     limit: int = 8,
+    sort: str = Query(DEFAULT_SORT),
 ) -> dict[str, object]:
     _check_web_enabled()
     safe_keyword = q.strip()
     safe_limit = max(1, min(20, int(limit)))
     safe_page = max(1, int(page))
     safe_filter = _normalize_filter(type)
+    safe_sort = normalize_sort(sort)
     extension = None if safe_filter == "all" else safe_filter
     offset = (safe_page - 1) * safe_limit
 
@@ -206,6 +240,7 @@ async def api_files(
         extension=extension,
         offset=offset,
         limit=safe_limit,
+        sort=safe_sort,
     )
     total_pages = max(1, (total_count + safe_limit - 1) // safe_limit)
 
@@ -217,15 +252,18 @@ async def api_files(
             extension=extension,
             offset=offset,
             limit=safe_limit,
+            sort=safe_sort,
         )
 
     items = [
         {
             "id": record_id,
             "name": name,
+            "size_bytes": size_bytes,
+            "created_at": created_at,
             "get_command": f"/get {record_id}",
         }
-        for record_id, name in results
+        for record_id, name, size_bytes, created_at in results
     ]
 
     return {
@@ -240,7 +278,8 @@ async def api_files(
         "summary": {
             "keyword": safe_keyword,
             "filter": safe_filter,
-            "filter_label": FILTER_LABELS[safe_filter],
+            "filter_label": _filter_label(safe_filter),
+            "sort": safe_sort,
             "total_count": total_count,
             "total_size_bytes": total_size,
         },

@@ -1,6 +1,8 @@
 const state = {
   keyword: "",
   type: "all",
+  sort: "time_desc",
+  defaultSort: "time_desc",
   page: 1,
   limit: 8,
   totalPages: 1,
@@ -19,6 +21,7 @@ const refs = {
   searchForm: document.getElementById("searchForm"),
   keywordInput: document.getElementById("keywordInput"),
   typeSelect: document.getElementById("typeSelect"),
+  sortSelect: document.getElementById("sortSelect"),
   pageInput: document.getElementById("pageInput"),
   refreshBtn: document.getElementById("refreshBtn"),
   prevBtn: document.getElementById("prevBtn"),
@@ -75,11 +78,18 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleString();
+}
+
 function renderTable(items, permissions) {
   if (!items.length) {
     refs.tableBody.innerHTML = `
       <tr>
-        <td colspan="3">没有匹配结果，试试换个关键词或筛选类型。</td>
+        <td colspan="5">没有匹配结果，试试换个关键词或筛选类型。</td>
       </tr>
     `;
     return;
@@ -92,10 +102,14 @@ function renderTable(items, permissions) {
       const id = Number(item.id);
       const name = escapeHtml(String(item.name || ""));
       const command = escapeHtml(String(item.get_command || `/get ${id}`));
+      const size = escapeHtml(formatSize(item.size_bytes));
+      const created = escapeHtml(formatDateTime(item.created_at));
       return `
         <tr>
           <td>${id}</td>
           <td class="name-cell">${name}</td>
+          <td>${size}</td>
+          <td>${created}</td>
           <td>
             <div class="action-row">
               <a class="minor" href="/api/files/${id}/download" target="_blank" rel="noopener">下载</a>
@@ -165,11 +179,31 @@ async function loadFilters() {
   refs.typeSelect.innerHTML = data.filters
     .map((item) => {
       const value = escapeHtml(item.key);
-      const label = escapeHtml(item.label);
+      const count = item.count;
+      const label =
+        count === null || count === undefined
+          ? escapeHtml(item.label)
+          : `${escapeHtml(item.label)} (${Number(count)})`;
       return `<option value="${value}">${label}</option>`;
     })
     .join("");
   refs.typeSelect.value = state.type;
+
+  const sorts = data.sorts || [];
+  if (sorts.length) {
+    refs.sortSelect.innerHTML = sorts
+      .map((item) => {
+        const value = escapeHtml(item.key);
+        const label = escapeHtml(item.label);
+        return `<option value="${value}">${label}</option>`;
+      })
+      .join("");
+  }
+  state.defaultSort = data.default_sort || state.defaultSort;
+  if (!sorts.some((item) => item.key === state.sort)) {
+    state.sort = state.defaultSort;
+  }
+  refs.sortSelect.value = state.sort;
 }
 
 async function loadFiles() {
@@ -177,6 +211,7 @@ async function loadFiles() {
   const params = new URLSearchParams({
     q: state.keyword,
     type: state.type,
+    sort: state.sort,
     page: String(state.page),
     limit: String(state.limit),
   });
@@ -207,7 +242,7 @@ async function loadFiles() {
   } catch (error) {
     refs.tableBody.innerHTML = `
       <tr>
-        <td colspan="3">请求失败: ${escapeHtml(error.message)}</td>
+        <td colspan="5">请求失败: ${escapeHtml(error.message)}</td>
       </tr>
     `;
     refs.statusText.textContent = "加载失败";
@@ -219,7 +254,20 @@ function bindEvents() {
     event.preventDefault();
     state.keyword = refs.keywordInput.value.trim();
     state.type = refs.typeSelect.value || "all";
+    state.sort = refs.sortSelect.value || state.defaultSort;
     state.page = Math.max(1, Number(refs.pageInput.value || "1"));
+    await loadFiles();
+  });
+
+  refs.typeSelect.addEventListener("change", async () => {
+    state.type = refs.typeSelect.value || "all";
+    state.page = 1;
+    await loadFiles();
+  });
+
+  refs.sortSelect.addEventListener("change", async () => {
+    state.sort = refs.sortSelect.value || state.defaultSort;
+    state.page = 1;
     await loadFiles();
   });
 

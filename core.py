@@ -199,6 +199,70 @@ def _format_size(total_bytes: int) -> str:
                 return f"{int(size)} {unit}"
             return f"{size:.2f} {unit}"
         size /= 1024.0
+    return f"{size:.2f} TB"
+
+
+DEFAULT_SORT = "time_desc"
+# key -> human label (surfaced to the web UI sort dropdown)
+SORT_LABELS: dict[str, str] = {
+    "time_desc": "时间倒序（最新在前）",
+    "time_asc": "时间正序（最早在前）",
+    "size_desc": "大小（从大到小）",
+    "size_asc": "大小（从小到大）",
+    "name_asc": "名称（A→Z）",
+    "name_desc": "名称（Z→A）",
+}
+# id is autoincrement and monotonic with upload time, so time sort == id sort.
+# These fragments are chosen from a fixed whitelist (never user input) so it is
+# safe to interpolate them into ORDER BY.
+_SQL_SORT_CLAUSES: dict[str, str] = {
+    "time_desc": "id DESC",
+    "time_asc": "id ASC",
+    "size_desc": "file_size DESC, id DESC",
+    "size_asc": "file_size ASC, id DESC",
+    "name_asc": "LOWER(name) ASC, id DESC",
+    "name_desc": "LOWER(name) DESC, id DESC",
+}
+
+
+def _normalize_sort(sort: Optional[str]) -> str:
+    if sort in SORT_LABELS:
+        return sort
+    return DEFAULT_SORT
+
+
+# Public alias for callers outside this module (e.g. the web API).
+normalize_sort = _normalize_sort
+
+
+def _sql_order_by(sort: Optional[str]) -> str:
+    return _SQL_SORT_CLAUSES[_normalize_sort(sort)]
+
+
+def _to_iso(value: object) -> Optional[str]:
+    """Normalize a stored timestamp into an ISO 8601 string (UTC-aware).
+
+    sqlite/turso store naive UTC text ('YYYY-MM-DD HH:MM:SS'); postgres/mongo
+    hand back datetime objects. Naive values are treated as UTC.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace(" ", "T", 1))
+    except ValueError:
+        return text
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
 
 
 class FileStore(Protocol):
@@ -217,7 +281,11 @@ class FileStore(Protocol):
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
+        sort: str = DEFAULT_SORT,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
+        ...
+
+    async def list_extension_counts(self) -> dict[str, int]:
         ...
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
@@ -243,18 +311,33 @@ class SQLiteStore:
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
                     file_size INTEGER NOT NULL DEFAULT 0,
+                    ext TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
-            try:
-                await db.execute(
-                    "ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0"
-                )
-            except Exception:
-                pass
+            for statement in (
+                "ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE files ADD COLUMN ext TEXT",
+            ):
+                try:
+                    await db.execute(statement)
+                except Exception:
+                    pass
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext)")
+            await self._backfill_ext(db)
             await db.commit()
+
+    @staticmethod
+    async def _backfill_ext(db: aiosqlite.Connection) -> None:
+        cursor = await db.execute("SELECT id, name FROM files WHERE ext IS NULL")
+        rows = await cursor.fetchall()
+        for row in rows:
+            await db.execute(
+                "UPDATE files SET ext = ? WHERE id = ?",
+                (_extract_extension(str(row[1])), int(row[0])),
+            )
 
     async def close(self) -> None:
         return None
@@ -266,13 +349,14 @@ class SQLiteStore:
 
             await db.execute(
                 """
-                INSERT INTO files (name, file_id, file_size)
-                VALUES (?, ?, ?)
+                INSERT INTO files (name, file_id, file_size, ext)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(file_id) DO UPDATE SET
                     name = excluded.name,
-                    file_size = excluded.file_size
+                    file_size = excluded.file_size,
+                    ext = excluded.ext
                 """,
-                (name, file_id, _normalize_file_size(file_size)),
+                (name, file_id, _normalize_file_size(file_size), _extract_extension(name)),
             )
             await db.commit()
             return not exists
@@ -283,7 +367,8 @@ class SQLiteStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
+        sort: str = DEFAULT_SORT,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
         async with aiosqlite.connect(self._db_path) as db:
             where_clause = "WHERE LOWER(name) LIKE LOWER(?)"
             where_params: list[object] = [f"%{keyword}%"]
@@ -293,9 +378,9 @@ class SQLiteStore:
                 where_params.append(f"%.{extension.lower()}")
 
             query = (
-                "SELECT id, name FROM files "
+                "SELECT id, name, file_size, created_at FROM files "
                 f"{where_clause} "
-                "ORDER BY id DESC LIMIT ? OFFSET ?"
+                f"ORDER BY {_sql_order_by(sort)} LIMIT ? OFFSET ?"
             )
             query_params = [*where_params, limit + 1, max(0, offset)]
             cursor = await db.execute(query, tuple(query_params))
@@ -313,11 +398,28 @@ class SQLiteStore:
         total_count = int(stats_row[0]) if stats_row is not None else 0
         total_size = int(stats_row[1]) if stats_row is not None else 0
         return (
-            [(int(row[0]), str(row[1])) for row in visible_rows],
+            [
+                (
+                    int(row[0]),
+                    str(row[1]),
+                    _normalize_file_size(int(row[2] or 0)),
+                    _to_iso(row[3]),
+                )
+                for row in visible_rows
+            ],
             has_next,
             total_count,
             total_size,
         )
+
+    async def list_extension_counts(self) -> dict[str, int]:
+        async with aiosqlite.connect(self._db_path) as db:
+            cursor = await db.execute(
+                "SELECT ext, COUNT(1) FROM files "
+                "WHERE ext IS NOT NULL AND ext <> '' GROUP BY ext"
+            )
+            rows = await cursor.fetchall()
+        return {str(row[0]).lower(): int(row[1]) for row in rows}
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         detail = await self.get_file_detail(record_id)
@@ -380,6 +482,7 @@ class PostgresStore:
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
                     file_size BIGINT NOT NULL DEFAULT 0,
+                    ext TEXT,
                     created_at TIMESTAMPTZ DEFAULT NOW()
                 )
                 """
@@ -387,7 +490,20 @@ class PostgresStore:
             await conn.execute(
                 "ALTER TABLE files ADD COLUMN IF NOT EXISTS file_size BIGINT NOT NULL DEFAULT 0"
             )
+            await conn.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS ext TEXT")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext)")
+            await self._backfill_ext(conn)
+
+    @staticmethod
+    async def _backfill_ext(conn) -> None:
+        rows = await conn.fetch("SELECT id, name FROM files WHERE ext IS NULL")
+        for row in rows:
+            await conn.execute(
+                "UPDATE files SET ext = $1 WHERE id = $2",
+                _extract_extension(str(row["name"])),
+                int(row["id"]),
+            )
 
     async def close(self) -> None:
         if self._pool is None:
@@ -401,15 +517,17 @@ class PostgresStore:
             exists = await conn.fetchval("SELECT 1 FROM files WHERE file_id = $1", file_id)
             await conn.execute(
                 """
-                INSERT INTO files (name, file_id, file_size)
-                VALUES ($1, $2, $3)
+                INSERT INTO files (name, file_id, file_size, ext)
+                VALUES ($1, $2, $3, $4)
                 ON CONFLICT(file_id) DO UPDATE SET
                     name = EXCLUDED.name,
-                    file_size = EXCLUDED.file_size
+                    file_size = EXCLUDED.file_size,
+                    ext = EXCLUDED.ext
                 """,
                 name,
                 file_id,
                 _normalize_file_size(file_size),
+                _extract_extension(name),
             )
             return not bool(exists)
 
@@ -419,16 +537,18 @@ class PostgresStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
+        sort: str = DEFAULT_SORT,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
+        order_by = _sql_order_by(sort)
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             if extension is None:
                 rows = await conn.fetch(
-                    """
-                    SELECT id, name
+                    f"""
+                    SELECT id, name, file_size, created_at
                     FROM files
                     WHERE name ILIKE $1
-                    ORDER BY id DESC
+                    ORDER BY {order_by}
                     LIMIT $2 OFFSET $3
                     """,
                     f"%{keyword}%",
@@ -445,12 +565,12 @@ class PostgresStore:
                 )
             else:
                 rows = await conn.fetch(
-                    """
-                    SELECT id, name
+                    f"""
+                    SELECT id, name, file_size, created_at
                     FROM files
                     WHERE name ILIKE $1
                       AND LOWER(name) LIKE $2
-                    ORDER BY id DESC
+                    ORDER BY {order_by}
                     LIMIT $3 OFFSET $4
                     """,
                     f"%{keyword}%",
@@ -474,11 +594,28 @@ class PostgresStore:
         total_count = int(stats_row["total_count"]) if stats_row is not None else 0
         total_size = int(stats_row["total_size"]) if stats_row is not None else 0
         return (
-            [(int(row["id"]), str(row["name"])) for row in visible_rows],
+            [
+                (
+                    int(row["id"]),
+                    str(row["name"]),
+                    _normalize_file_size(int(row["file_size"] or 0)),
+                    _to_iso(row["created_at"]),
+                )
+                for row in visible_rows
+            ],
             has_next,
             total_count,
             total_size,
         )
+
+    async def list_extension_counts(self) -> dict[str, int]:
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT ext, COUNT(1) AS c FROM files "
+                "WHERE ext IS NOT NULL AND ext <> '' GROUP BY ext"
+            )
+        return {str(row["ext"]).lower(): int(row["c"]) for row in rows}
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         detail = await self.get_file_detail(record_id)
@@ -551,15 +688,27 @@ class TursoStore:
                     name TEXT NOT NULL,
                     file_id TEXT NOT NULL UNIQUE,
                     file_size INTEGER NOT NULL DEFAULT 0,
+                    ext TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_files_name ON files(name)")
-            try:
-                conn.execute("ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
-            except Exception:
-                pass
+            for statement in (
+                "ALTER TABLE files ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE files ADD COLUMN ext TEXT",
+            ):
+                try:
+                    conn.execute(statement)
+                except Exception:
+                    pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_files_ext ON files(ext)")
+            null_rows = conn.execute("SELECT id, name FROM files WHERE ext IS NULL").fetchall()
+            for row in null_rows:
+                conn.execute(
+                    "UPDATE files SET ext = ? WHERE id = ?",
+                    (_extract_extension(str(row[1])), int(row[0])),
+                )
             conn.commit()
         finally:
             self._safe_close(conn)
@@ -578,13 +727,14 @@ class TursoStore:
 
             conn.execute(
                 """
-                INSERT INTO files (name, file_id, file_size)
-                VALUES (?, ?, ?)
+                INSERT INTO files (name, file_id, file_size, ext)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT(file_id) DO UPDATE SET
                     name = excluded.name,
-                    file_size = excluded.file_size
+                    file_size = excluded.file_size,
+                    ext = excluded.ext
                 """,
-                (name, file_id, _normalize_file_size(file_size)),
+                (name, file_id, _normalize_file_size(file_size), _extract_extension(name)),
             )
             conn.commit()
             return not exists
@@ -600,7 +750,8 @@ class TursoStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
+        sort: str,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
         conn = self._connect()
         try:
             where_clause = "WHERE LOWER(name) LIKE LOWER(?)"
@@ -611,9 +762,9 @@ class TursoStore:
                 where_params.append(f"%.{extension.lower()}")
 
             query = (
-                "SELECT id, name FROM files "
+                "SELECT id, name, file_size, created_at FROM files "
                 f"{where_clause} "
-                "ORDER BY id DESC LIMIT ? OFFSET ?"
+                f"ORDER BY {_sql_order_by(sort)} LIMIT ? OFFSET ?"
             )
             query_params = [*where_params, limit + 1, max(0, offset)]
             rows = conn.execute(query, tuple(query_params)).fetchall()
@@ -631,7 +782,15 @@ class TursoStore:
         total_count = int(stats_row[0]) if stats_row is not None else 0
         total_size = int(stats_row[1]) if stats_row is not None else 0
         return (
-            [(int(row[0]), str(row[1])) for row in visible_rows],
+            [
+                (
+                    int(row[0]),
+                    str(row[1]),
+                    _normalize_file_size(int(row[2] or 0)),
+                    _to_iso(row[3]),
+                )
+                for row in visible_rows
+            ],
             has_next,
             total_count,
             total_size,
@@ -643,8 +802,25 @@ class TursoStore:
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
-        return await asyncio.to_thread(self._search_sync, keyword, extension, offset, limit)
+        sort: str = DEFAULT_SORT,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
+        return await asyncio.to_thread(
+            self._search_sync, keyword, extension, offset, limit, sort
+        )
+
+    def _list_extension_counts_sync(self) -> dict[str, int]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT ext, COUNT(1) FROM files "
+                "WHERE ext IS NOT NULL AND ext <> '' GROUP BY ext"
+            ).fetchall()
+        finally:
+            self._safe_close(conn)
+        return {str(row[0]).lower(): int(row[1]) for row in rows}
+
+    async def list_extension_counts(self) -> dict[str, int]:
+        return await asyncio.to_thread(self._list_extension_counts_sync)
 
     def _get_file_detail_sync(self, record_id: int) -> Optional[tuple[str, str, int]]:
         conn = self._connect()
@@ -728,6 +904,20 @@ class MongoStore:
         await self._files.create_index([("record_id", self._ASCENDING)], unique=True)
         await self._files.create_index([("name", self._ASCENDING)])
         await self._files.create_index([("ext", self._ASCENDING)])
+        await self._backfill_ext()
+
+    async def _backfill_ext(self) -> None:
+        cursor = self._files.find(
+            {"ext": {"$exists": False}},
+            {"_id": 0, "record_id": 1, "name": 1},
+        )
+        async for row in cursor:
+            if "record_id" not in row or "name" not in row:
+                continue
+            await self._files.update_one(
+                {"record_id": row["record_id"]},
+                {"$set": {"ext": _extract_extension(str(row["name"]))}},
+            )
 
     async def close(self) -> None:
         if self._client is not None:
@@ -775,25 +965,41 @@ class MongoStore:
             )
             return False
 
+    def _mongo_sort_spec(self, sort: str) -> list[tuple[str, int]]:
+        # id in the SQL stores maps to record_id here; time sort == record_id sort.
+        specs: dict[str, list[tuple[str, int]]] = {
+            "time_desc": [("record_id", self._DESCENDING)],
+            "time_asc": [("record_id", self._ASCENDING)],
+            "size_desc": [("file_size", self._DESCENDING), ("record_id", self._DESCENDING)],
+            "size_asc": [("file_size", self._ASCENDING), ("record_id", self._DESCENDING)],
+            "name_asc": [("name", self._ASCENDING), ("record_id", self._DESCENDING)],
+            "name_desc": [("name", self._DESCENDING), ("record_id", self._DESCENDING)],
+        }
+        return specs[_normalize_sort(sort)]
+
     async def search_file(
         self,
         keyword: str,
         extension: Optional[str],
         offset: int,
         limit: int,
-    ) -> tuple[list[tuple[int, str]], bool, int, int]:
+        sort: str = DEFAULT_SORT,
+    ) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
         query: dict[str, object] = {
             "name": {"$regex": re.escape(keyword), "$options": "i"}
         }
         if extension is not None:
             query["ext"] = extension.lower()
 
-        cursor = (
-            self._files.find(query, {"_id": 0, "record_id": 1, "name": 1})
-            .sort("record_id", self._DESCENDING)
-            .skip(max(0, offset))
-            .limit(limit + 1)
-        )
+        normalized_sort = _normalize_sort(sort)
+        find_op = self._files.find(
+            query,
+            {"_id": 0, "record_id": 1, "name": 1, "file_size": 1, "created_at": 1},
+        ).sort(self._mongo_sort_spec(normalized_sort))
+        # Case-insensitive name ordering to match the SQL LOWER(name) stores.
+        if normalized_sort in {"name_asc", "name_desc"}:
+            find_op = find_op.collation({"locale": "en", "strength": 2})
+        cursor = find_op.skip(max(0, offset)).limit(limit + 1)
         rows = await cursor.to_list(length=limit + 1)
         total_count = int(await self._files.count_documents(query))
 
@@ -810,7 +1016,12 @@ class MongoStore:
         visible_rows = rows[:limit]
         return (
             [
-                (int(row["record_id"]), str(row["name"]))
+                (
+                    int(row["record_id"]),
+                    str(row["name"]),
+                    _normalize_file_size(int(row.get("file_size", 0) or 0)),
+                    _to_iso(row.get("created_at")),
+                )
                 for row in visible_rows
                 if "record_id" in row and "name" in row
             ],
@@ -818,6 +1029,19 @@ class MongoStore:
             total_count,
             total_size,
         )
+
+    async def list_extension_counts(self) -> dict[str, int]:
+        pipeline = [
+            {"$match": {"ext": {"$nin": [None, ""]}}},
+            {"$group": {"_id": "$ext", "c": {"$sum": 1}}},
+        ]
+        rows = await self._files.aggregate(pipeline).to_list(length=None)
+        counts: dict[str, int] = {}
+        for row in rows:
+            ext = row.get("_id")
+            if ext:
+                counts[str(ext).lower()] = int(row.get("c", 0))
+        return counts
 
     async def get_file(self, record_id: int) -> Optional[tuple[str, str]]:
         detail = await self.get_file_detail(record_id)
@@ -933,13 +1157,19 @@ async def search_file(
     extension: Optional[str] = None,
     offset: int = 0,
     limit: int = SEARCH_LIMIT,
-) -> tuple[list[tuple[int, str]], bool, int, int]:
+    sort: str = DEFAULT_SORT,
+) -> tuple[list[tuple[int, str, int, Optional[str]]], bool, int, int]:
     return await file_store.search_file(
         keyword=keyword,
         extension=extension,
         offset=offset,
         limit=limit,
+        sort=sort,
     )
+
+
+async def list_extension_counts() -> dict[str, int]:
+    return await file_store.list_extension_counts()
 
 
 async def get_file(record_id: int) -> Optional[tuple[str, str]]:
@@ -1074,7 +1304,7 @@ def _build_search_keyboard(
 ) -> InlineKeyboardMarkup:
     keyboard_rows: list[list[InlineKeyboardButton]] = []
 
-    for file_record_id, name in results:
+    for file_record_id, name, *_ in results:
         file_label = _short_button_text(name)
         file_button = InlineKeyboardButton(
             text=file_label,
