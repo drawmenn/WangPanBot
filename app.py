@@ -9,7 +9,7 @@ from urllib.parse import quote
 from aiogram import types
 from aiogram.exceptions import TelegramBadRequest
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from core import (
@@ -200,8 +200,14 @@ async def drive_page() -> HTMLResponse:
     if not drive_path.exists():
         raise HTTPException(status_code=404, detail="drive.html not found.")
     html = drive_path.read_text(encoding="utf-8")
-    html = html.replace("/web/drive.css", f"/web/drive.css?v={_asset_version('drive.css')}")
-    html = html.replace("/web/drive.js", f"/web/drive.js?v={_asset_version('drive.js')}")
+    html = html.replace(
+        "/web/drive.css?v=__ASSET_VERSION__",
+        f"/web/drive.css?v={_asset_version('drive.css')}",
+    )
+    html = html.replace(
+        "/web/drive.js?v=__ASSET_VERSION__",
+        f"/web/drive.js?v={_asset_version('drive.js')}",
+    )
     return HTMLResponse(html)
 
 
