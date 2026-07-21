@@ -243,13 +243,13 @@ async def api_files(
     q: str = "",
     type: str = Query("all"),  # noqa: A002
     page: int = 1,
-    limit: int = 8,
+    limit: int = 20,
     sort: str = Query(DEFAULT_SORT),
 ) -> dict[str, object]:
     _check_web_enabled()
     safe_keyword = q.strip()
-    safe_limit = max(1, min(20, int(limit)))
-    safe_page = max(1, int(page))
+    safe_limit = max(1, min(100, limit))
+    safe_page = max(1, page)
     safe_filter = _normalize_filter(type)
     safe_sort = normalize_sort(sort)
     extension = None if safe_filter == "all" else safe_filter

@@ -4,7 +4,7 @@ const state = {
   sort: "time_desc",
   defaultSort: "time_desc",
   page: 1,
-  limit: 8,
+  limit: 20,
   totalPages: 1,
   hasNext: false,
   token: "",
@@ -22,8 +22,14 @@ const refs = {
   keywordInput: document.getElementById("keywordInput"),
   typeSelect: document.getElementById("typeSelect"),
   sortSelect: document.getElementById("sortSelect"),
+  limitSelect: document.getElementById("limitSelect"),
+  limitInput: document.getElementById("limitInput"),
   pageInput: document.getElementById("pageInput"),
   refreshBtn: document.getElementById("refreshBtn"),
+  uploadToggle: document.getElementById("uploadToggle"),
+  tokenToggle: document.getElementById("tokenToggle"),
+  uploadPanel: document.getElementById("uploadPanel"),
+  tokenPanel: document.getElementById("tokenPanel"),
   prevBtn: document.getElementById("prevBtn"),
   nextBtn: document.getElementById("nextBtn"),
   pagerText: document.getElementById("pagerText"),
@@ -249,14 +255,112 @@ async function loadFiles() {
   }
 }
 
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 100;
+
+function clampLimit(value) {
+  const num = Math.floor(Number(value));
+  if (!Number.isFinite(num)) return state.limit;
+  return Math.max(LIMIT_MIN, Math.min(LIMIT_MAX, num));
+}
+
+// Read the effective per-page limit from the select/custom-input pair and
+// sync state + the custom input's visibility. In custom mode the input is
+// normalized to the clamped value so the display never disagrees with the
+// value actually sent to the server.
+function applyLimitFromControls() {
+  const selected = refs.limitSelect.value;
+  if (selected === "custom") {
+    refs.limitInput.hidden = false;
+    const clamped = clampLimit(refs.limitInput.value);
+    refs.limitInput.value = String(clamped);
+    state.limit = clamped;
+  } else {
+    refs.limitInput.hidden = true;
+    state.limit = clampLimit(selected);
+  }
+}
+
+// Point the select/input pair at the current state.limit, falling back to the
+// custom input when the value is not one of the preset options.
+function syncLimitControls() {
+  const current = String(state.limit);
+  const hasPreset = Array.from(refs.limitSelect.options).some(
+    (option) => option.value === current,
+  );
+  if (hasPreset) {
+    refs.limitSelect.value = current;
+    refs.limitInput.hidden = true;
+  } else {
+    refs.limitSelect.value = "custom";
+    refs.limitInput.hidden = false;
+  }
+  refs.limitInput.value = current;
+}
+
+function setPopover(panel, toggle, show) {
+  panel.hidden = !show;
+  toggle.setAttribute("aria-expanded", String(show));
+}
+
+function closePopovers() {
+  setPopover(refs.uploadPanel, refs.uploadToggle, false);
+  setPopover(refs.tokenPanel, refs.tokenToggle, false);
+}
+
 function bindEvents() {
   refs.searchForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     state.keyword = refs.keywordInput.value.trim();
     state.type = refs.typeSelect.value || "all";
     state.sort = refs.sortSelect.value || state.defaultSort;
+    applyLimitFromControls();
     state.page = Math.max(1, Number(refs.pageInput.value || "1"));
     await loadFiles();
+  });
+
+  refs.limitSelect.addEventListener("change", async () => {
+    applyLimitFromControls();
+    state.page = 1;
+    await loadFiles();
+  });
+
+  refs.limitInput.addEventListener("change", async () => {
+    applyLimitFromControls();
+    state.page = 1;
+    await loadFiles();
+  });
+
+  refs.uploadToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const show = refs.uploadPanel.hidden;
+    closePopovers();
+    setPopover(refs.uploadPanel, refs.uploadToggle, show);
+    if (show) refs.uploadInput.focus();
+  });
+
+  refs.tokenToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const show = refs.tokenPanel.hidden;
+    closePopovers();
+    setPopover(refs.tokenPanel, refs.tokenToggle, show);
+    if (show) refs.tokenInput.focus();
+  });
+
+  // Click outside closes any open popover; clicks inside keep it open.
+  document.addEventListener("click", (event) => {
+    if (
+      refs.uploadPanel.contains(event.target) ||
+      refs.tokenPanel.contains(event.target)
+    ) {
+      return;
+    }
+    closePopovers();
+  });
+
+  // Escape closes any open popover.
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closePopovers();
   });
 
   refs.typeSelect.addEventListener("change", async () => {
@@ -330,6 +434,7 @@ function bindEvents() {
 async function init() {
   state.token = localStorage.getItem("wangpan_web_admin_token") || "";
   refs.tokenInput.value = state.token;
+  syncLimitControls();
   bindEvents();
   await loadFilters();
   await loadFiles();
