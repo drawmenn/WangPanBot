@@ -312,7 +312,11 @@ tbody tr:hover {
     justify-content: flex-end;
   }
 
+  /* On a stretched topbar the popover can otherwise hug the far edge; pin it
+     within the viewport with a small gutter on both sides. */
   .popover {
-    width: min(360px, 92vw);
+    right: 0;
+    left: auto;
+    width: min(360px, calc(100vw - 24px));
   }
 }
